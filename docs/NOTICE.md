@@ -11,12 +11,21 @@
 - 官网：https://ffmpeg.org/
 - 许可证说明：https://ffmpeg.org/legal.html
 
-CI 默认以 LGPL-only 方向编译 FFmpeg：不启用 `--enable-gpl`，不启用 `--enable-nonfree`。实际发布时仍应：
+当前 CI 构建为了支持编码导出，启用 `--enable-gpl` 和 `--enable-libx264`，但不启用 `--enable-nonfree`。实际发布时应：
 
 1. 保留 FFmpeg 版权与许可证说明。
 2. 保留本 Notice 文件或等价说明。
 3. 提供对应 FFmpeg 源码获取方式、构建脚本和修改说明。
-4. 如果将来启用 GPL 组件，应按 GPL 要求重新审查整个分发方式。
+4. 按 GPL 要求提供本项目和所集成 GPL 组件的对应源码获取方式。
+
+## x264
+
+编码导出中的 FFmpeg 软件 H.264 编码可使用 x264。
+
+- 官网/源码：https://code.videolan.org/videolan/x264
+- 许可证：GPL
+
+如果分发包含 x264 的 APK，应按 GPL 要求保留许可证说明、源码获取方式和构建脚本。
 
 ## 免责声明
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a small LGPL-only FFmpeg CLI executable for Android arm64-v8a.
+# Build a GPL-enabled FFmpeg CLI executable for Android arm64-v8a.
 # The output is intentionally named libffmpeg.so so Android Gradle packages it as a native library,
 # then MainActivity can execute them from nativeLibraryDir via ProcessBuilder.
 
@@ -26,13 +26,16 @@ WORK_DIR="${ROOT_DIR}/build/ffmpeg-android-arm64"
 SRC_ARCHIVE="${WORK_DIR}/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 SRC_DIR="${WORK_DIR}/ffmpeg-${FFMPEG_VERSION}"
 INSTALL_DIR="${WORK_DIR}/install/arm64-v8a"
+X264_SRC_DIR="${WORK_DIR}/x264"
+X264_INSTALL_DIR="${WORK_DIR}/install/x264-arm64-v8a"
 PREBUILT_DIR="${ROOT_DIR}/prebuilt/ffmpeg/arm64-v8a"
 OUT_BIN="${PREBUILT_DIR}/libffmpeg.so"
 OUT_PROBE="${PREBUILT_DIR}/libffprobe.so"
+MANIFEST_FILE="${PREBUILT_DIR}/ffmpeg-build-manifest.txt"
 
 mkdir -p "${WORK_DIR}" "${PREBUILT_DIR}"
 
-if [[ -s "${OUT_BIN}" && -s "${OUT_PROBE}" ]]; then
+if [[ -s "${OUT_BIN}" && -s "${OUT_PROBE}" && -f "${MANIFEST_FILE}" ]] && grep -q "GPL enabled, libx264 enabled" "${MANIFEST_FILE}"; then
   echo "FFmpeg already exists: ${OUT_BIN}"
   echo "FFprobe already exists: ${OUT_PROBE}"
   file "${OUT_BIN}" || true
@@ -66,9 +69,36 @@ RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
 STRIP="${TOOLCHAIN}/bin/llvm-strip"
 NM="${TOOLCHAIN}/bin/llvm-nm"
 
-# This configuration is for remux / stream-copy cutting, not transcoding.
-# It keeps demuxers, muxers, parsers, and bitstream filters, but disables encoders/decoders/filters.
-# That is usually enough for: -map 0 -c copy, with common MP4/MOV/MKV/WebM/AVI/TS inputs.
+if [[ ! -d "${X264_SRC_DIR}/.git" ]]; then
+  rm -rf "${X264_SRC_DIR}"
+  echo "Cloning x264 stable branch..."
+  git clone --depth 1 --branch stable https://code.videolan.org/videolan/x264.git "${X264_SRC_DIR}"
+fi
+
+echo "Building x264 for Android arm64-v8a..."
+cd "${X264_SRC_DIR}"
+make distclean >/dev/null 2>&1 || true
+CC="${CC}" \
+AR="${AR}" \
+RANLIB="${RANLIB}" \
+STRIP="${STRIP}" \
+./configure \
+  --prefix="${X264_INSTALL_DIR}" \
+  --host=aarch64-linux-android \
+  --cross-prefix="${TOOLCHAIN}/bin/llvm-" \
+  --sysroot="${TOOLCHAIN}/sysroot" \
+  --enable-static \
+  --enable-pic \
+  --disable-cli \
+  --disable-asm
+make -j"$(nproc)"
+make install-lib-static
+
+cd "${SRC_DIR}"
+
+# This configuration supports both stream-copy cutting and transcoding.
+# It enables GPL because libx264 is included. Do not publish this build as LGPL-only.
+export PKG_CONFIG_PATH="${X264_INSTALL_DIR}/lib/pkgconfig"
 ./configure \
   --prefix="${INSTALL_DIR}" \
   --target-os=android \
@@ -82,10 +112,14 @@ NM="${TOOLCHAIN}/bin/llvm-nm"
   --nm="${NM}" \
   --strip="${STRIP}" \
   --sysroot="${TOOLCHAIN}/sysroot" \
-  --extra-cflags="-fPIC" \
-  --extra-ldflags="-pie" \
+  --extra-cflags="-fPIC -I${X264_INSTALL_DIR}/include" \
+  --extra-ldflags="-pie -L${X264_INSTALL_DIR}/lib" \
+  --extra-libs="-lm" \
+  --pkg-config-flags="--static" \
   --disable-shared \
   --enable-static \
+  --enable-gpl \
+  --enable-libx264 \
   --disable-doc \
   --disable-debug \
   --disable-ffplay \
@@ -95,21 +129,16 @@ NM="${TOOLCHAIN}/bin/llvm-nm"
   --disable-autodetect \
   --disable-symver \
   --disable-iconv \
-  --disable-zlib \
   --disable-bzlib \
   --disable-lzma \
   --disable-sdl2 \
   --disable-securetransport \
   --disable-vulkan \
-  --disable-mediacodec \
-  --disable-jni \
-  --disable-hwaccels \
+  --enable-mediacodec \
+  --enable-jni \
   --disable-devices \
   --disable-indevs \
   --disable-outdevs \
-  --disable-filters \
-  --disable-decoders \
-  --disable-encoders \
   --enable-protocol=file \
   --enable-protocol=pipe
 
@@ -124,13 +153,14 @@ chmod 755 "${OUT_BIN}" "${OUT_PROBE}"
   echo "FFmpeg-Version: ${FFMPEG_VERSION}"
   echo "Android-ABI: arm64-v8a"
   echo "Android-API: ${ANDROID_API}"
-  echo "License-Intent: LGPL-only, no --enable-gpl, no --enable-nonfree"
+  echo "License-Intent: GPL enabled, libx264 enabled, no --enable-nonfree"
+  echo "x264-Source: https://code.videolan.org/videolan/x264.git stable"
   echo "Built-At-UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "Outputs:"
   echo "  ${OUT_BIN}"
   echo "  ${OUT_PROBE}"
   echo "Note: Android ARM64 binaries are not executed on the x86_64 GitHub runner."
-} > "${PREBUILT_DIR}/ffmpeg-build-manifest.txt"
+} > "${MANIFEST_FILE}"
 
 echo "Built FFmpeg binary: ${OUT_BIN}"
 echo "Built FFprobe binary: ${OUT_PROBE}"

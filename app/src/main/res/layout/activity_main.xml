@@ -1,0 +1,835 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/app_bg">
+
+    <ScrollView
+        android:id="@+id/homeScreen"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:padding="22dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="56dp"
+                android:gravity="center"
+                android:text="无损快剪"
+                android:textColor="@color/app_text"
+                android:textSize="32sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:lineSpacingExtra="3dp"
+                android:text="本地视频裁剪、预览选区、无重编码导出"
+                android:textColor="@color/app_muted"
+                android:textSize="15sp" />
+
+            <Button
+                android:id="@+id/openVideoButton"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="36dp"
+                android:background="@drawable/bg_primary_button"
+                android:text="打开视频"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/aboutButtonMain"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_secondary_button"
+                android:text="关于"
+                android:textAllCaps="false"
+                android:textColor="@color/app_text"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/homeStatusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:background="@drawable/bg_status"
+                android:text="等待选择视频"
+                android:textColor="@color/app_text"
+                android:textSize="14sp" />
+        </LinearLayout>
+    </ScrollView>
+
+    <ScrollView
+        android:id="@+id/editorScreen"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/editorBackButton"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_secondary_button"
+                    android:text="主界面"
+                    android:textAllCaps="false"
+                    android:textColor="@color/app_text" />
+
+                <Button
+                    android:id="@+id/editorAboutButton"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_marginLeft="10dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_secondary_button"
+                    android:text="关于"
+                    android:textAllCaps="false"
+                    android:textColor="@color/app_text" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/inputText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="未选择输入文件"
+                    android:textColor="@color/app_text"
+                    android:textSize="13sp" />
+
+                <FrameLayout
+                    android:id="@+id/previewFrame"
+                    android:layout_width="match_parent"
+                    android:layout_height="250dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_preview">
+
+                    <TextureView
+                        android:id="@+id/previewTexture"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent" />
+
+                    <ImageView
+                        android:id="@+id/previewImage"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="#000000"
+                        android:scaleType="fitCenter" />
+
+                    <TextView
+                        android:id="@+id/previewOverlay"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="#66000000"
+                        android:gravity="center"
+                        android:text="选择视频后显示预览帧"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp" />
+                </FrameLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/currentText"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="当前位置：00:00:00.000"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/durationText"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="right"
+                        android:text="总时长：--"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/playButton"
+                        android:layout_width="0dp"
+                        android:layout_height="42dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="播放"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+
+                    <Button
+                        android:id="@+id/playRangeButton"
+                        android:layout_width="0dp"
+                        android:layout_height="42dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="播放选区"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+
+                    <Button
+                        android:id="@+id/resetZoomButton"
+                        android:layout_width="0dp"
+                        android:layout_height="42dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="复位画面"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/speed025Button"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="0.25x"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+
+                    <Button
+                        android:id="@+id/speed05Button"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="0.5x"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+
+                    <Button
+                        android:id="@+id/speed1Button"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="1x"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/frameModeButton"
+                        android:layout_width="0dp"
+                        android:layout_height="42dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="逐帧模式"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+
+                    <Button
+                        android:id="@+id/previewInputButton"
+                        android:layout_width="0dp"
+                        android:layout_height="42dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="预览输入"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+
+                    <Button
+                        android:id="@+id/previewOutputButton"
+                        android:layout_width="0dp"
+                        android:layout_height="42dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="预览输出"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="选择切片位置"
+                    android:textColor="@color/app_text"
+                    android:textSize="17sp"
+                    android:textStyle="bold" />
+
+                <com.example.losslesscutter.RangeTimelineView
+                    android:id="@+id/timelineView"
+                    android:layout_width="match_parent"
+                    android:layout_height="76dp"
+                    android:layout_marginTop="8dp" />
+
+                <TextView
+                    android:id="@+id/startLabel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="开始：00:00:00.000"
+                    android:textColor="@color/app_text"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/endLabel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="结束：00:00:00.000"
+                    android:textColor="@color/app_text"
+                    android:textSize="14sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <EditText
+                        android:id="@+id/startEdit"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_input"
+                        android:hint="开始 HH:MM:SS.mmm"
+                        android:inputType="text"
+                        android:singleLine="true"
+                        android:textColor="@color/app_text"
+                        android:textSize="14sp" />
+
+                    <EditText
+                        android:id="@+id/endEdit"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_input"
+                        android:hint="结束 HH:MM:SS.mmm"
+                        android:inputType="text"
+                        android:singleLine="true"
+                        android:textColor="@color/app_text"
+                        android:textSize="14sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/applyTimesButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="42dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_secondary_button"
+                    android:text="应用首尾时间"
+                    android:textAllCaps="false"
+                    android:textColor="@color/app_text" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal">
+
+                    <EditText
+                        android:id="@+id/centerEdit"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1.2"
+                        android:background="@drawable/bg_input"
+                        android:hint="中心时间"
+                        android:inputType="text"
+                        android:singleLine="true"
+                        android:textColor="@color/app_text"
+                        android:textSize="14sp" />
+
+                    <EditText
+                        android:id="@+id/beforeEdit"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="0.9"
+                        android:background="@drawable/bg_input"
+                        android:hint="前秒"
+                        android:inputType="numberDecimal"
+                        android:singleLine="true"
+                        android:textColor="@color/app_text"
+                        android:textSize="14sp" />
+
+                    <EditText
+                        android:id="@+id/afterEdit"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="0.9"
+                        android:background="@drawable/bg_input"
+                        android:hint="后秒"
+                        android:inputType="numberDecimal"
+                        android:singleLine="true"
+                        android:textColor="@color/app_text"
+                        android:textSize="14sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/applyCenterButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="42dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_secondary_button"
+                    android:text="按中心时间生成范围"
+                    android:textAllCaps="false"
+                    android:textColor="@color/app_text" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/setStartButton"
+                        android:layout_width="0dp"
+                        android:layout_height="42dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="当前设为开始"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+
+                    <Button
+                        android:id="@+id/setEndButton"
+                        android:layout_width="0dp"
+                        android:layout_height="42dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="当前设为结束"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/goExportButton"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_primary_button"
+                android:text="下一步：导出视频"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+        </LinearLayout>
+    </ScrollView>
+
+    <ScrollView
+        android:id="@+id/exportScreen"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <Button
+                android:id="@+id/exportBackButton"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:background="@drawable/bg_secondary_button"
+                android:text="返回预览选区"
+                android:textAllCaps="false"
+                android:textColor="@color/app_text" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="导出视频"
+                    android:textColor="@color/app_text"
+                    android:textSize="17sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/exportSummaryText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="裁剪范围：--"
+                    android:textColor="@color/app_text"
+                    android:textSize="14sp" />
+
+                <RadioGroup
+                    android:id="@+id/exportModeGroup"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal">
+
+                    <RadioButton
+                        android:id="@+id/copyModeRadio"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:checked="true"
+                        android:text="不编码"
+                        android:textColor="@color/app_text" />
+
+                    <RadioButton
+                        android:id="@+id/encodeModeRadio"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="编码导出"
+                        android:textColor="@color/app_text" />
+                </RadioGroup>
+
+                <TextView
+                    android:id="@+id/encodeUnavailableText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_status"
+                    android:text="正在检测 FFmpeg 编码能力..."
+                    android:textColor="@color/app_text"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:id="@+id/encodePanel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <RadioGroup
+                        android:id="@+id/backendGroup"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <RadioButton
+                            android:id="@+id/hardwareBackendRadio"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:checked="true"
+                            android:text="硬件编码"
+                            android:textColor="@color/app_text" />
+
+                        <RadioButton
+                            android:id="@+id/ffmpegBackendRadio"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="FFmpeg 编码"
+                            android:textColor="@color/app_text" />
+                    </RadioGroup>
+
+                    <Spinner
+                        android:id="@+id/containerSpinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="8dp" />
+
+                    <Spinner
+                        android:id="@+id/videoCodecSpinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="8dp" />
+
+                    <Spinner
+                        android:id="@+id/audioCodecSpinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="8dp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <EditText
+                            android:id="@+id/videoBitrateEdit"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_marginRight="8dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_input"
+                            android:hint="视频码率 4000k"
+                            android:inputType="text"
+                            android:singleLine="true"
+                            android:textColor="@color/app_text"
+                            android:textSize="14sp" />
+
+                        <EditText
+                            android:id="@+id/audioBitrateEdit"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_input"
+                            android:hint="音频码率 128k"
+                            android:inputType="text"
+                            android:singleLine="true"
+                            android:textColor="@color/app_text"
+                            android:textSize="14sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <EditText
+                            android:id="@+id/widthEdit"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_marginRight="8dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_input"
+                            android:hint="宽 原始"
+                            android:inputType="number"
+                            android:singleLine="true"
+                            android:textColor="@color/app_text"
+                            android:textSize="14sp" />
+
+                        <EditText
+                            android:id="@+id/heightEdit"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_marginRight="8dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_input"
+                            android:hint="高 原始"
+                            android:inputType="number"
+                            android:singleLine="true"
+                            android:textColor="@color/app_text"
+                            android:textSize="14sp" />
+
+                        <EditText
+                            android:id="@+id/fpsEdit"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_input"
+                            android:hint="帧率"
+                            android:inputType="numberDecimal"
+                            android:singleLine="true"
+                            android:textColor="@color/app_text"
+                            android:textSize="14sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <EditText
+                            android:id="@+id/crfEdit"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_marginRight="8dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_input"
+                            android:hint="CRF 23"
+                            android:inputType="numberDecimal"
+                            android:singleLine="true"
+                            android:textColor="@color/app_text"
+                            android:textSize="14sp" />
+
+                        <EditText
+                            android:id="@+id/presetEdit"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_input"
+                            android:hint="preset medium"
+                            android:inputType="text"
+                            android:singleLine="true"
+                            android:textColor="@color/app_text"
+                            android:textSize="14sp" />
+                    </LinearLayout>
+
+                    <EditText
+                        android:id="@+id/extraArgsEdit"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/bg_input"
+                        android:hint="额外 FFmpeg 参数"
+                        android:inputType="text"
+                        android:singleLine="true"
+                        android:textColor="@color/app_text"
+                        android:textSize="14sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/chooseOutputButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_secondary_button"
+                    android:text="选择输出位置"
+                    android:textAllCaps="false"
+                    android:textColor="@color/app_text" />
+
+                <TextView
+                    android:id="@+id/outputText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="未选择输出文件"
+                    android:textColor="@color/app_muted"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/startExportButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_primary_button"
+                    android:text="开始导出"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/statusText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_status"
+                    android:text="等待导出"
+                    android:textColor="@color/app_text"
+                    android:textSize="14sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/toggleLogButton"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="显示日志"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+
+                    <Button
+                        android:id="@+id/copyLogButton"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_marginRight="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="复制日志"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+
+                    <Button
+                        android:id="@+id/clearLogButton"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_secondary_button"
+                        android:text="清空日志"
+                        android:textAllCaps="false"
+                        android:textColor="@color/app_text" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/logText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@color/app_log_bg"
+                    android:padding="10dp"
+                    android:textColor="#D1D5DB"
+                    android:textIsSelectable="true"
+                    android:textSize="11sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+</FrameLayout>

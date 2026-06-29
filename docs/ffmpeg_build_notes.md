@@ -26,35 +26,41 @@ prebuilt/ffmpeg/arm64-v8a/libffmpeg.so
 
 ## 当前 FFmpeg 配置目标
 
-目标不是转码，而是无重编码裁剪：
+目标同时支持无重编码裁剪、逐帧抽帧和编码导出：
 
 ```bash
 -map 0 -c copy
 ```
 
-所以配置倾向于小体积：
+以及类似：
+
+```bash
+ffmpeg -ss 10.000 -i input.mp4 -t 5.000 \
+  -c:v libx264 -crf 23 -preset medium -c:a aac output.mp4
+```
+
+当前配置倾向于功能完整：
 
 - 保留 FFmpeg CLI。
-- 保留 demuxers / muxers / parsers / bitstream filters。
-- 禁用 encoders / decoders / filters。
+- 保留 demuxers / muxers / parsers / bitstream filters / filters。
+- 启用 decoder / encoder，用于逐帧抽帧和转码。
+- 启用 `--enable-gpl` 与 `--enable-libx264`。
+- 启用 Android MediaCodec/JNI，用于可用设备上的硬件编码尝试。
 - 禁用 network。
-- 不启用 GPL / nonfree。
+- 不启用 nonfree。
 - 静态链接为单个 Android arm64-v8a 可执行文件。
 
 ---
 
-## 为什么禁用 encoder/decoder
+## 许可证影响
 
-纯 stream copy 不需要解码和编码，FFmpeg 只需要：
+启用 x264 后，构建产物不再是 LGPL-only。分发 APK 时需要按 GPL 要求保留许可证说明、源码获取方式和构建脚本。对应说明见：
 
-- 读取容器：demuxer
-- 解析码流：parser
-- 必要时调整封装位流：bitstream filter
-- 写入容器：muxer
+```text
+docs/NOTICE.md
+```
 
-因此当前配置能显著减小体积和构建时间。
-
-如果你要加入“帧精确裁剪”或“边界重编码”，就需要重新开启相关组件。
+如果需要恢复 LGPL-only 轻量构建，应移除 `--enable-gpl`、`--enable-libx264`，并再次禁用 encoders / decoders / filters。
 
 ---
 
@@ -95,13 +101,6 @@ libffprobe.so
 
 Java 侧再用同样方式执行。
 
-### 加入精确模式
+### 精确模式
 
-需要至少开启：
-
-- 对应视频/音频 decoder。
-- 对应 encoder，或接 Android MediaCodec。
-- trim/concat/filter 相关能力。
-
-首版不建议直接做全量转码，体积和稳定性会明显变差。
-
+当前脚本已开启逐帧抽帧所需的解码能力。App 会优先用 FFprobe 建立帧时间索引，再用 FFmpeg 抽取指定帧到缓存；如果设备中的 APK 仍内置旧轻量 FFmpeg，逐帧和编码功能会被 UI 禁用或在日志中提示失败。

@@ -1,8 +1,18 @@
 # LosslessCutDroid / 无损快剪
 
-> fix5：优化界面日志、加入关于/免责/FFmpeg 致谢，并支持 GitHub Actions 使用固定 keystore 生成可覆盖升级的 release APK。
+> v0.6.0：重写 XML 界面，新增三种选区方式、慢放、逐帧模式入口、导出参数页和编码导出能力探测。
 
 Android 本地无重编码视频时间裁剪 App。
+
+## v0.6.0 改动
+
+- 主界面简化为“打开视频 / 关于”，选中视频后进入预览选区页，再进入导出页。
+- 选区支持三种方式：手输首尾时间、中心时间 + 前后范围、当前预览位置设为开始/结束。
+- 预览继续使用 `TextureView + MediaPlayer`，新增 `0.25x / 0.5x / 1x` 慢放和双指缩放/拖动画面。
+- 新增自定义时间轴拖动框。
+- 新增逐帧模式：用 FFprobe 建帧索引，并尽量用 FFmpeg 精确抽帧。
+- 导出页保留无重编码 `-c copy`，并新增编码导出参数页；编码选项按 APK 内 FFmpeg 能力动态启用。
+- CI FFmpeg 构建改为 GPL/libx264 方向，支持软件 H.264 编码，并保留 MediaCodec 硬件编码尝试。
 
 ## v0.5.0 改动
 
@@ -123,7 +133,7 @@ ffmpeg -hide_banner -y \
 https://ffmpeg.org/legal.html
 ```
 
-CI 默认按 LGPL-only 方向编译，不启用 GPL / nonfree 组件。详细说明见：
+当前 CI 为支持编码导出启用 GPL/libx264，不启用 nonfree 组件。详细说明见：
 
 ```text
 docs/NOTICE.md
