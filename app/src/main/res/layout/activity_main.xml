@@ -568,10 +568,26 @@
                     android:orientation="vertical"
                     android:visibility="gone">
 
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="编码参数说明：留空表示尽量使用默认值或原始参数；码率越高通常越清晰，文件也越大。"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="编码后端：硬件编码速度快、兼容依赖手机；FFmpeg 编码更可控但更慢。"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
+
                     <RadioGroup
                         android:id="@+id/backendGroup"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
                         android:orientation="horizontal">
 
                         <RadioButton
@@ -592,28 +608,60 @@
                             android:textColor="@color/app_text" />
                     </RadioGroup>
 
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="封装格式：输出文件容器，例如 mp4、mkv、mov；不等同于视频编码格式。"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
+
                     <Spinner
                         android:id="@+id/containerSpinner"
                         android:layout_width="match_parent"
                         android:layout_height="44dp"
-                        android:layout_marginTop="8dp" />
+                        android:layout_marginTop="2dp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="视频编码器：决定画面如何压缩。H.264 兼容最好，HEVC/H.265 通常更省空间但兼容性更依赖设备。"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
 
                     <Spinner
                         android:id="@+id/videoCodecSpinner"
                         android:layout_width="match_parent"
                         android:layout_height="44dp"
-                        android:layout_marginTop="8dp" />
+                        android:layout_marginTop="2dp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="音频编码器：aac 兼容性较好；copy 表示音频不重新编码。"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
 
                     <Spinner
                         android:id="@+id/audioCodecSpinner"
                         android:layout_width="match_parent"
                         android:layout_height="44dp"
-                        android:layout_marginTop="8dp" />
+                        android:layout_marginTop="2dp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="码率：每秒写入的数据量。视频常用 2000k-8000k；音频常用 96k-192k。"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
 
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
+                        android:layout_marginTop="2dp"
                         android:orientation="horizontal">
 
                         <EditText
@@ -642,10 +690,18 @@
                             android:textSize="14sp" />
                     </LinearLayout>
 
-                    <LinearLayout
+                    <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
+                        android:text="画面参数：宽高留空保持原始尺寸；只填一个边会按比例缩放。帧率留空保持原始帧率。"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
                         android:orientation="horizontal">
 
                         <EditText
@@ -687,10 +743,18 @@
                             android:textSize="14sp" />
                     </LinearLayout>
 
-                    <LinearLayout
+                    <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
+                        android:text="质量参数：CRF 越小画质越高、文件越大；preset 越慢通常压缩越好。主要用于 FFmpeg 软件编码。"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
                         android:orientation="horizontal">
 
                         <EditText
@@ -719,11 +783,19 @@
                             android:textSize="14sp" />
                     </LinearLayout>
 
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="额外参数：直接追加到 FFmpeg 命令末尾，适合高级用户；填错会导致导出失败。"
+                        android:textColor="@color/app_muted"
+                        android:textSize="12sp" />
+
                     <EditText
                         android:id="@+id/extraArgsEdit"
                         android:layout_width="match_parent"
                         android:layout_height="44dp"
-                        android:layout_marginTop="8dp"
+                        android:layout_marginTop="2dp"
                         android:background="@drawable/bg_input"
                         android:hint="额外 FFmpeg 参数"
                         android:inputType="text"
