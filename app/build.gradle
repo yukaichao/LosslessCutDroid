@@ -1,0 +1,76 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.example.losslesscutter'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.example.losslesscutter'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+
+        // 首版只在线编译 arm64-v8a。需要更多 ABI 时，复制脚本并扩展这里。
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            // 把 libffmpeg.so 解压到 nativeLibraryDir，便于 ProcessBuilder 执行。
+            useLegacyPackaging true
+        }
+    }
+}
+
+def ffmpegPrebuiltRoot = file("${rootDir}/prebuilt/ffmpeg")
+def appJniLibsRoot = file("${projectDir}/src/main/jniLibs")
+def supportedFfmpegAbis = ['arm64-v8a']
+def requireFfmpegBinary = providers.gradleProperty('requireFfmpeg').orElse('false').get().toBoolean()
+
+tasks.register('prepareFfmpegBinary') {
+    group = 'ffmpeg'
+    description = 'Copy CI-built FFmpeg executable from prebuilt/ffmpeg/<abi>/libffmpeg.so into app/src/main/jniLibs/<abi>.'
+
+    inputs.dir(ffmpegPrebuiltRoot).optional()
+    outputs.dir(appJniLibsRoot)
+
+    doLast {
+        int copied = 0
+        supportedFfmpegAbis.each { abi ->
+            File src = file("${ffmpegPrebuiltRoot}/${abi}/libffmpeg.so")
+            File dstDir = file("${appJniLibsRoot}/${abi}")
+            if (src.exists() && src.length() > 0) {
+                dstDir.mkdirs()
+                copy {
+                    from src
+                    into dstDir
+                    rename { 'libffmpeg.so' }
+                }
+                copied++
+                logger.lifecycle("FFmpeg binary copied for ${abi}: ${src}")
+            }
+        }
+
+        if (copied == 0) {
+            String msg = "No FFmpeg binary found under ${ffmpegPrebuiltRoot}. Run scripts/build_ffmpeg_android_arm64.sh or disable -PrequireFfmpeg."
+            if (requireFfmpegBinary) {
+                throw new GradleException(msg)
+            }
+            logger.warn(msg)
+        }
+    }
+}
+
+afterEvaluate {
+    // 让 Android 打包 native libs 前自动引用 prebuilt/ffmpeg 的产物。
+    tasks.matching { task ->
+        task.name.startsWith('merge') && task.name.endsWith('NativeLibs')
+    }.configureEach { task ->
+        task.dependsOn(tasks.named('prepareFfmpegBinary'))
+    }
+}

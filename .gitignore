@@ -1,0 +1,14 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+app/build/
+
+# FFmpeg binary is produced by CI/local build and should normally not be committed.
+# The Gradle task prepareFfmpegBinary copies prebuilt/ffmpeg/<abi>/libffmpeg.so into jniLibs before packaging.
+prebuilt/ffmpeg/**/libffmpeg.so
+prebuilt/ffmpeg/**/ffmpeg-build-manifest.txt
+app/src/main/jniLibs/**/libffmpeg.so
+app/src/main/jniLibs/**/libffprobe.so
