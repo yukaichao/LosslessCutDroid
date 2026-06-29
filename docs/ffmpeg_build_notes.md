@@ -86,9 +86,10 @@ ndk {
 
 ### 加入 ffprobe
 
-如果后续要在 App 里读取时长、码率、流信息，可以把 `--disable-ffprobe` 改成 `--enable-ffprobe`，并输出：
+当前 App 已启用 FFprobe，用于读取流信息并跳过异常空音轨。CI 会输出：
 
 ```text
+libffmpeg.so
 libffprobe.so
 ```
 

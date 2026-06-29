@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build a small LGPL-only FFmpeg CLI executable for Android arm64-v8a.
 # The output is intentionally named libffmpeg.so so Android Gradle packages it as a native library,
-# then MainActivity can execute it from nativeLibraryDir via ProcessBuilder.
+# then MainActivity can execute them from nativeLibraryDir via ProcessBuilder.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FFMPEG_VERSION="${FFMPEG_VERSION:-8.0}"
@@ -28,12 +28,15 @@ SRC_DIR="${WORK_DIR}/ffmpeg-${FFMPEG_VERSION}"
 INSTALL_DIR="${WORK_DIR}/install/arm64-v8a"
 PREBUILT_DIR="${ROOT_DIR}/prebuilt/ffmpeg/arm64-v8a"
 OUT_BIN="${PREBUILT_DIR}/libffmpeg.so"
+OUT_PROBE="${PREBUILT_DIR}/libffprobe.so"
 
 mkdir -p "${WORK_DIR}" "${PREBUILT_DIR}"
 
-if [[ -s "${OUT_BIN}" ]]; then
+if [[ -s "${OUT_BIN}" && -s "${OUT_PROBE}" ]]; then
   echo "FFmpeg already exists: ${OUT_BIN}"
+  echo "FFprobe already exists: ${OUT_PROBE}"
   file "${OUT_BIN}" || true
+  file "${OUT_PROBE}" || true
   exit 0
 fi
 
@@ -86,7 +89,7 @@ NM="${TOOLCHAIN}/bin/llvm-nm"
   --disable-doc \
   --disable-debug \
   --disable-ffplay \
-  --disable-ffprobe \
+  --enable-ffprobe \
   --enable-ffmpeg \
   --disable-network \
   --disable-autodetect \
@@ -110,10 +113,11 @@ NM="${TOOLCHAIN}/bin/llvm-nm"
   --enable-protocol=file \
   --enable-protocol=pipe
 
-make -j"$(nproc)" ffmpeg
-"${STRIP}" ffmpeg || true
+make -j"$(nproc)" ffmpeg ffprobe
+"${STRIP}" ffmpeg ffprobe || true
 cp -f ffmpeg "${OUT_BIN}"
-chmod 755 "${OUT_BIN}"
+cp -f ffprobe "${OUT_PROBE}"
+chmod 755 "${OUT_BIN}" "${OUT_PROBE}"
 
 # Keep a small manifest for license/debug review.
 {
@@ -122,10 +126,14 @@ chmod 755 "${OUT_BIN}"
   echo "Android-API: ${ANDROID_API}"
   echo "License-Intent: LGPL-only, no --enable-gpl, no --enable-nonfree"
   echo "Built-At-UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "Configure:"
-  ./ffmpeg -hide_banner -version | sed 's/^/  /' || true
+  echo "Outputs:"
+  echo "  ${OUT_BIN}"
+  echo "  ${OUT_PROBE}"
+  echo "Note: Android ARM64 binaries are not executed on the x86_64 GitHub runner."
 } > "${PREBUILT_DIR}/ffmpeg-build-manifest.txt"
 
 echo "Built FFmpeg binary: ${OUT_BIN}"
-ls -lh "${OUT_BIN}"
+echo "Built FFprobe binary: ${OUT_PROBE}"
+ls -lh "${OUT_BIN}" "${OUT_PROBE}"
 file "${OUT_BIN}" || true
+file "${OUT_PROBE}" || true

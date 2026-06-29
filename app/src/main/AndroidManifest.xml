@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
         android:allowBackup="true"
-        android:label="无损视频裁剪"
+        android:label="无损快剪"
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"

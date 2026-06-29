@@ -81,8 +81,10 @@ jobs:
         shell: bash
         run: |
           test -s prebuilt/ffmpeg/arm64-v8a/libffmpeg.so
-          ls -lh prebuilt/ffmpeg/arm64-v8a/libffmpeg.so
+          test -s prebuilt/ffmpeg/arm64-v8a/libffprobe.so
+          ls -lh prebuilt/ffmpeg/arm64-v8a/libffmpeg.so prebuilt/ffmpeg/arm64-v8a/libffprobe.so
           file prebuilt/ffmpeg/arm64-v8a/libffmpeg.so || true
+          file prebuilt/ffmpeg/arm64-v8a/libffprobe.so || true
 
       - name: Setup Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
@@ -105,5 +107,6 @@ jobs:
           name: ffmpeg-android-arm64-v8a
           path: |
             prebuilt/ffmpeg/arm64-v8a/libffmpeg.so
+            prebuilt/ffmpeg/arm64-v8a/libffprobe.so
             prebuilt/ffmpeg/arm64-v8a/ffmpeg-build-manifest.txt
           if-no-files-found: error
