@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build-debug-apk:
-    name: Build debug APK with FFmpeg arm64-v8a
+    name: Build APK with FFmpeg arm64-v8a
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -29,6 +29,10 @@ jobs:
       ANDROID_NDK_VERSION: '27.2.12479018'
       FFMPEG_VERSION: ${{ github.event.inputs.ffmpeg_version || '8.0' }}
       ANDROID_API: ${{ github.event.inputs.android_api || '26' }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
     steps:
       - name: Checkout source
@@ -91,14 +95,34 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug -PrequireFfmpeg=true --no-daemon --stacktrace
+      - name: Prepare stable signing keystore
+        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/losslesscutdroid-signing"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/losslesscutdroid-signing/release.jks"
+          test -s "$RUNNER_TEMP/losslesscutdroid-signing/release.jks"
+          echo "RELEASE_STORE_FILE=$RUNNER_TEMP/losslesscutdroid-signing/release.jks" >> "$GITHUB_ENV"
+          echo "RELEASE_STORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "RELEASE_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "RELEASE_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        shell: bash
+        run: |
+          if [[ -n "${RELEASE_STORE_FILE:-}" ]]; then
+            echo "Stable signing secrets detected. Building signed release APK."
+            gradle :app:assembleRelease -PrequireFfmpeg=true --no-daemon --stacktrace
+          else
+            echo "No signing secrets configured. Building debug APK. Debug certificate may change on clean CI runners."
+            gradle :app:assembleDebug -PrequireFfmpeg=true --no-daemon --stacktrace
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LosslessCutter-debug-apk-with-ffmpeg
-          path: app/build/outputs/apk/debug/*.apk
+          name: LosslessCutDroid-apk-with-ffmpeg
+          path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
 
       - name: Upload FFmpeg binary artifact

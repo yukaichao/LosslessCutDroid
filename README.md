@@ -1,6 +1,28 @@
 # LosslessCutDroid / 无损快剪
 
+> fix5：优化界面日志、加入关于/免责/FFmpeg 致谢，并支持 GitHub Actions 使用固定 keystore 生成可覆盖升级的 release APK。
+
 Android 本地无重编码视频时间裁剪 App。
+
+## v0.5.0 改动
+
+- 状态区改为“摘要状态 + 可展开详细日志”，默认不把 FFmpeg 原始输出铺满界面。
+- 新增“复制日志”“清空日志”，方便把实机错误直接贴出来。
+- 新增“关于 / 免责 / 致谢”页面，包含本地处理说明、无重编码限制、FFmpeg 引用与许可证提示。
+- CI 支持固定 APK 签名：配置 GitHub Secrets 后自动构建 signed release APK，避免每次 debug 证书不同导致无法覆盖安装。
+- 新增 `docs/signing.md` 和 `docs/NOTICE.md`。
+
+## v0.3.0 / v0.4.0 改动
+
+针对实机反馈修复：预览区域黑框、输出文件看起来和源文件一样、裁剪完成后不能直接预览输出。
+
+- 预览区增加首帧/指定时间帧缩略图覆盖层，避免未播放前只有黑框。
+- 新增“预览输入 / 预览输出”按钮。
+- 裁剪成功后自动切换到输出文件预览。
+- 输出写入改为 `ContentResolver.openOutputStream(uri, "rwt")` 截断写入，避免新裁剪文件比旧文件短时残留旧文件尾部，导致看起来像没裁剪。
+- 开始裁剪时严格校验手动输入时间，不再在解析失败时静默回退到完整时长。
+- 日志明确显示最终裁剪范围和输出时长，例如 `00:01:11.000 → 00:01:46.000，输出时长 00:00:35.000`。
+- 时间输入支持英文/中文冒号与逗号：`00:01:46.00`、`00:01:46,00`、`00：01：46.00`。
 
 ## v0.2.0 改动
 
@@ -21,6 +43,27 @@ Android 本地无重编码视频时间裁剪 App。
 - 使用 Android SAF 选择输入和输出文件。
 - GitHub Actions 在线编译 FFmpeg + FFprobe Android arm64-v8a 二进制，并自动打包 APK。
 
+## 固定签名证书
+
+如果每次 GitHub Actions 编译出来的 APK 证书不同，手机会无法直接覆盖安装。
+
+本项目已经支持固定 release 签名。配置以下 GitHub Secrets 后，CI 会输出 signed release APK：
+
+```text
+ANDROID_KEYSTORE_BASE64
+ANDROID_KEYSTORE_PASSWORD
+ANDROID_KEY_ALIAS
+ANDROID_KEY_PASSWORD
+```
+
+详细步骤见：
+
+```text
+docs/signing.md
+```
+
+没有配置 Secrets 时，CI 会继续输出 debug APK；debug 证书可能随 runner 变化。
+
 ## 在线编译
 
 上传到 GitHub 仓库后：
@@ -34,36 +77,14 @@ Android 本地无重编码视频时间裁剪 App。
 5. 编译完成后下载 artifact：
 
 ```text
-LosslessCutter-debug-apk-with-ffmpeg
+LosslessCutDroid-apk-with-ffmpeg
 ```
 
-里面就是已经内置 FFmpeg / FFprobe 的 debug APK。
-
-## 项目结构
-
-```text
-LosslessCutDroid/
-  settings.gradle
-  build.gradle
-  app/
-    build.gradle
-    src/main/
-      AndroidManifest.xml
-      java/com/example/losslesscutter/MainActivity.java
-  scripts/
-    build_ffmpeg_android_arm64.sh
-  prebuilt/
-    ffmpeg/arm64-v8a/libffmpeg.so
-    ffmpeg/arm64-v8a/libffprobe.so
-  .github/workflows/
-    android-debug-apk.yml
-```
-
-`prebuilt/ffmpeg/arm64-v8a/` 里的二进制由 CI 生成，默认不需要手动提交。
+里面就是已经内置 FFmpeg / FFprobe 的 APK；配置签名 Secrets 后为 signed release APK，否则为 debug APK。
 
 ## 裁剪命令逻辑
 
-App 不再直接 `-map 0` 保留所有流，而是先用 FFprobe 检测流信息，然后只映射可用的视频轨和正常音频轨：
+App 先用 FFprobe 检测流信息，然后只映射可用的视频轨和正常音频轨：
 
 ```bash
 ffprobe -v error -show_entries stream=index,codec_type,codec_name,sample_rate,channels -of json input.mp4
@@ -87,27 +108,23 @@ ffmpeg -hide_banner -y \
 
 如果检测到正常音频轨，会额外加入对应 `-map 0:<audio_index>`。
 
-## 为什么修复了异常空音轨问题
-
-你遇到的失败日志里有：
-
-```text
-Stream #0:1: Audio: none, 0 channels
-sample rate not set
-Could not write header (incorrect codec parameters ?)
-```
-
-这是源文件里存在一个“音频类型但没有真实编码参数”的异常空音轨。旧版使用 `-map 0` 把它也复制进 MP4，导致写文件头失败。
-
-新版改为：
-
-- 正常视频轨：保留。
-- 正常音频轨：保留。
-- `Audio: none`、`unknown codec`、`0 channels`、无采样率：跳过。
-- 仍失败时：自动重试主视频轨。
-
 ## 无重编码限制
 
 无重编码裁剪不是帧级精确裁剪。H.264 / H.265 / AV1 这类 GOP 编码通常只能从关键帧附近稳定开始，因此实际起点可能略早于用户输入时间。
 
 如果需要帧级精确裁剪，需要做“边界重编码”模式，体积和复杂度都会上升。
+
+
+## 许可证与致谢
+
+本项目集成并调用 FFmpeg / FFprobe。FFmpeg 许可证和法律说明见：
+
+```text
+https://ffmpeg.org/legal.html
+```
+
+CI 默认按 LGPL-only 方向编译，不启用 GPL / nonfree 组件。详细说明见：
+
+```text
+docs/NOTICE.md
+```

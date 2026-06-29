@@ -12,3 +12,10 @@ prebuilt/ffmpeg/**/libffmpeg.so
 prebuilt/ffmpeg/**/ffmpeg-build-manifest.txt
 app/src/main/jniLibs/**/libffmpeg.so
 app/src/main/jniLibs/**/libffprobe.so
+
+# Never commit private signing keys.
+*.jks
+*.keystore
+*.p12
+*.pfx
+prebuilt/ffmpeg/**/libffprobe.so

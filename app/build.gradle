@@ -2,6 +2,12 @@ plugins {
     id 'com.android.application'
 }
 
+def releaseStoreFilePath = project.findProperty('releaseStoreFile') ?: System.getenv('RELEASE_STORE_FILE')
+def releaseStorePasswordValue = project.findProperty('releaseStorePassword') ?: System.getenv('RELEASE_STORE_PASSWORD')
+def releaseKeyAliasValue = project.findProperty('releaseKeyAlias') ?: System.getenv('RELEASE_KEY_ALIAS')
+def releaseKeyPasswordValue = project.findProperty('releaseKeyPassword') ?: System.getenv('RELEASE_KEY_PASSWORD')
+def hasReleaseSigning = releaseStoreFilePath && releaseStorePasswordValue && releaseKeyAliasValue && releaseKeyPasswordValue
+
 android {
     namespace 'com.example.losslesscutter'
     compileSdk 35
@@ -10,12 +16,36 @@ android {
         applicationId 'com.example.losslesscutter'
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName '0.2.0'
+        versionCode 5
+        versionName '0.5.0'
 
         // 首版只在线编译 arm64-v8a。需要更多 ABI 时，扩展 FFmpeg 编译脚本和这里。
         ndk {
             abiFilters 'arm64-v8a'
+        }
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseStoreFilePath)
+                storePassword releaseStorePasswordValue
+                keyAlias releaseKeyAliasValue
+                keyPassword releaseKeyPasswordValue
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // 本地调试使用系统 debug key。CI 每次新 runner 的 debug key 可能不同。
+        }
+        release {
+            minifyEnabled false
+            shrinkResources false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 

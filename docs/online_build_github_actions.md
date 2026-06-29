@@ -6,14 +6,14 @@
 .github/workflows/android-debug-apk.yml
 ```
 
-这个 workflow 会顺序执行：
+workflow 会顺序执行：
 
 1. 安装 Android SDK / NDK。
 2. 下载 FFmpeg 官方 release 源码包。
-3. 使用 Android NDK clang 交叉编译 arm64-v8a FFmpeg CLI。
-4. 生成 `prebuilt/ffmpeg/arm64-v8a/libffmpeg.so`。
-5. Gradle 自动把它复制到 `app/src/main/jniLibs/arm64-v8a/libffmpeg.so`。
-6. 构建 debug APK。
+3. 使用 Android NDK clang 交叉编译 arm64-v8a FFmpeg / FFprobe CLI。
+4. 生成 `prebuilt/ffmpeg/arm64-v8a/libffmpeg.so` 和 `libffprobe.so`。
+5. Gradle 直接把 `prebuilt/ffmpeg` 作为 `jniLibs` 源目录打包。
+6. 如果配置了固定签名 Secrets，则构建 signed release APK；否则构建 debug APK。
 7. 上传 APK artifact 和 FFmpeg binary artifact。
 
 ---
@@ -35,10 +35,25 @@ android_api = 26
 7. 编译完成后，在本次 workflow 页面底部下载：
 
 ```text
-LosslessCutter-debug-apk-with-ffmpeg
+LosslessCutDroid-apk-with-ffmpeg
 ```
 
-解压后就是已经内置 FFmpeg 的 `app-debug.apk`。
+配置签名 Secrets 后，里面是 signed release APK；未配置时，里面是 debug APK。
+
+---
+
+## 固定签名
+
+如果需要每次 APK 都能覆盖安装升级，请先按 `docs/signing.md` 配置：
+
+```text
+ANDROID_KEYSTORE_BASE64
+ANDROID_KEYSTORE_PASSWORD
+ANDROID_KEY_ALIAS
+ANDROID_KEY_PASSWORD
+```
+
+未配置时，GitHub Actions 使用临时 runner 的 debug key，证书可能变化。
 
 ---
 
@@ -47,10 +62,10 @@ LosslessCutter-debug-apk-with-ffmpeg
 ### APK 产物
 
 ```text
-LosslessCutter-debug-apk-with-ffmpeg
+LosslessCutDroid-apk-with-ffmpeg
 ```
 
-包含 Android debug APK，可直接安装测试。
+包含已内置 FFmpeg / FFprobe 的 APK。
 
 ### FFmpeg 单独产物
 
@@ -62,16 +77,15 @@ ffmpeg-android-arm64-v8a
 
 ```text
 libffmpeg.so
+libffprobe.so
 ffmpeg-build-manifest.txt
 ```
-
-这个 `libffmpeg.so` 可以复用到其它 Android 项目里。
 
 ---
 
 ## 为什么 FFmpeg 叫 libffmpeg.so
 
-Android Gradle Plugin 会自动打包 `app/src/main/jniLibs/<abi>/*.so` 到 APK 的 native library 区域。
+Android Gradle Plugin 会自动打包 `jniLibs/<abi>/*.so` 到 APK 的 native library 区域。
 
 本项目把 FFmpeg CLI 可执行文件重命名为：
 
@@ -93,33 +107,24 @@ Java 代码再用 `ProcessBuilder` 执行它。
 
 ## Gradle 如何引用 FFmpeg
 
-`app/build.gradle` 增加了任务：
+`app/build.gradle` 直接配置：
 
-```text
-prepareFfmpegBinary
+```gradle
+sourceSets {
+    main {
+        jniLibs.srcDirs = [file("${rootDir}/prebuilt/ffmpeg")]
+    }
+}
 ```
 
-它会把：
+CI 先生成：
 
 ```text
 prebuilt/ffmpeg/arm64-v8a/libffmpeg.so
+prebuilt/ffmpeg/arm64-v8a/libffprobe.so
 ```
 
-复制到：
-
-```text
-app/src/main/jniLibs/arm64-v8a/libffmpeg.so
-```
-
-并挂到 Android 的 `merge*NativeLibs` 任务前面。
-
-CI 构建 APK 时使用：
-
-```bash
-gradle :app:assembleDebug -PrequireFfmpeg=true
-```
-
-如果 FFmpeg 没生成，构建会直接失败，避免得到一个“能安装但不能裁剪”的 APK。
+Gradle 随后直接打包。这样不会在构建期间写入 `app/src/main/jniLibs`，避免 Gradle 8 / AGP 的隐式任务依赖错误。
 
 ---
 
@@ -183,7 +188,7 @@ app/build.gradle 的 abiFilters
 
 ```text
 prebuilt/ffmpeg/arm64-v8a/libffmpeg.so
-app/src/main/jniLibs/arm64-v8a/libffmpeg.so
+prebuilt/ffmpeg/arm64-v8a/libffprobe.so
 ```
 
 并确认 Gradle 命令带了：
@@ -196,7 +201,5 @@ app/src/main/jniLibs/arm64-v8a/libffmpeg.so
 
 检查：
 
-- `AndroidManifest.xml` 里 `android:extractNativeLibs="true"` 是否存在。
-- `app/build.gradle` 里 `useLegacyPackaging true` 是否存在。
-- `libffmpeg.so` 是否位于 `jniLibs/arm64-v8a/`。
-
+- `app/build.gradle` 里 `packagingOptions.jniLibs.useLegacyPackaging true` 是否存在。
+- `libffmpeg.so` 是否位于 `prebuilt/ffmpeg/arm64-v8a/`。
