@@ -10,8 +10,11 @@ import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Bitmap;
+import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.AudioAttributes;
+import android.media.MediaPlayer;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Bundle;
@@ -20,6 +23,8 @@ import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.text.InputType;
 import android.view.Gravity;
+import android.view.Surface;
+import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -31,7 +36,6 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.widget.VideoView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -83,7 +87,7 @@ public class MainActivity extends Activity {
     private boolean previewingOutput = false;
     private String inputName = "input.mp4";
 
-    private VideoView videoView;
+    private TextureView previewTextureView;
     private ImageView previewImageView;
     private TextView previewOverlayText;
     private Button previewInputButton;
@@ -113,6 +117,11 @@ public class MainActivity extends Activity {
     private long startMs = 0;
     private long endMs = 0;
     private boolean playingRange = false;
+    private MediaPlayer previewPlayer;
+    private Surface previewSurface;
+    private boolean previewPrepared = false;
+    private boolean playWhenPrepared = false;
+    private long pendingPreviewSeekMs = 0;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -148,8 +157,16 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
+        releasePreviewPlayer();
+        releasePreviewSurface();
         executor.shutdownNow();
         super.onDestroy();
+    }
+
+    @Override
+    protected void onPause() {
+        pausePreviewPlayback();
+        super.onPause();
     }
 
     private void saveStateToBundle(Bundle out) {
@@ -205,11 +222,9 @@ public class MainActivity extends Activity {
                 previewTarget = inputUri;
             }
             currentPreviewUri = previewTarget;
-            videoView.stopPlayback();
             long frameAt = previewingOutput ? 0 : startMs;
             showPreviewFrame(previewTarget, frameAt, (previewingOutput ? "输出预览帧" : "输入预览帧") + "\n已恢复裁剪范围");
-            videoView.setVideoURI(previewTarget);
-            seekPreviewTo(frameAt);
+            preparePreviewPlayer(previewTarget, frameAt, false);
         }
 
         if (inputUri != null) {
@@ -336,12 +351,35 @@ public class MainActivity extends Activity {
                 dp(236)
         ));
 
-        videoView = new VideoView(this);
-        videoView.setBackgroundColor(Color.BLACK);
-        previewFrame.addView(videoView, new FrameLayout.LayoutParams(
+        previewTextureView = new TextureView(this);
+        previewTextureView.setBackgroundColor(Color.BLACK);
+        previewTextureView.setOpaque(true);
+        previewFrame.addView(previewTextureView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
+        previewTextureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override
+            public void onSurfaceTextureAvailable(SurfaceTexture surfaceTexture, int width, int height) {
+                attachPreviewSurface(surfaceTexture);
+            }
+
+            @Override
+            public void onSurfaceTextureSizeChanged(SurfaceTexture surfaceTexture, int width, int height) {
+            }
+
+            @Override
+            public boolean onSurfaceTextureDestroyed(SurfaceTexture surfaceTexture) {
+                rememberPreviewPosition();
+                releasePreviewPlayer();
+                releasePreviewSurface();
+                return true;
+            }
+
+            @Override
+            public void onSurfaceTextureUpdated(SurfaceTexture surfaceTexture) {
+            }
+        });
 
         previewImageView = new ImageView(this);
         previewImageView.setBackgroundColor(Color.BLACK);
@@ -361,24 +399,6 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
-
-        videoView.setOnPreparedListener(mp -> {
-            int d = mp.getDuration();
-            if (!previewingOutput && d > 0 && durationMs <= 0) setDurationMs(d, true);
-            mp.setOnVideoSizeChangedListener((m, width, height) -> appendLog("预览尺寸：" + width + "x" + height));
-            if (!previewingOutput) seekPreviewTo(startMs);
-            else seekPreviewTo(0);
-        });
-        videoView.setOnCompletionListener(mp -> {
-            playingRange = false;
-            playButton.setText("播放 / 暂停");
-            showPreviewOverlay("播放结束");
-        });
-        videoView.setOnErrorListener((mp, what, extra) -> {
-            showPreviewOverlay("系统播放器无法预览此格式\n但仍可尝试无重编码裁剪");
-            appendLog("系统 VideoView 预览失败：what=" + what + " extra=" + extra);
-            return true;
-        });
 
         LinearLayout previewRow = horizontal();
         currentView = smallText("当前位置：00:00:00.000");
@@ -683,12 +703,11 @@ public class MainActivity extends Activity {
         currentPreviewUri = uri;
         playingRange = false;
         playButton.setText("播放 / 暂停");
-        videoView.stopPlayback();
+        releasePreviewPlayer();
         durationMs = readDurationMs(uri);
         if (durationMs > 0) setDurationMs(durationMs, true);
         showPreviewFrame(uri, 0, "输入预览帧\n点击播放或播放选区");
-        videoView.setVideoURI(uri);
-        videoView.seekTo(1);
+        preparePreviewPlayer(uri, 1, false);
     }
 
     private void previewInput() {
@@ -700,10 +719,9 @@ public class MainActivity extends Activity {
         currentPreviewUri = inputUri;
         playingRange = false;
         playButton.setText("播放 / 暂停");
-        videoView.stopPlayback();
+        releasePreviewPlayer();
         showPreviewFrame(inputUri, startMs, "输入预览帧\n可播放选区");
-        videoView.setVideoURI(inputUri);
-        seekPreviewTo(startMs);
+        preparePreviewPlayer(inputUri, startMs, false);
         setStatus("当前预览：输入文件");
     }
 
@@ -716,11 +734,10 @@ public class MainActivity extends Activity {
         currentPreviewUri = outputUri;
         playingRange = false;
         playButton.setText("播放 / 暂停");
-        videoView.stopPlayback();
+        releasePreviewPlayer();
         long outDuration = readDurationMs(outputUri);
         showPreviewFrame(outputUri, 0, outDuration > 0 ? "输出预览帧\n时长：" + formatClock(outDuration) : "输出预览帧");
-        videoView.setVideoURI(outputUri);
-        videoView.seekTo(1);
+        preparePreviewPlayer(outputUri, 1, false);
         currentView.setText("当前位置：00:00:00.000");
         setStatus(outDuration > 0 ? "当前预览：输出文件，时长 " + formatClock(outDuration) : "当前预览：输出文件");
     }
@@ -737,6 +754,150 @@ public class MainActivity extends Activity {
             try { retriever.release(); } catch (Exception ignored) {}
         }
         return 0;
+    }
+
+    private void attachPreviewSurface(SurfaceTexture surfaceTexture) {
+        releasePreviewSurface();
+        previewSurface = new Surface(surfaceTexture);
+        if (currentPreviewUri != null) {
+            boolean shouldAutoPlay = playWhenPrepared;
+            preparePreviewPlayer(currentPreviewUri, pendingPreviewSeekMs, shouldAutoPlay);
+        }
+    }
+
+    private void preparePreviewPlayer(Uri uri, long seekMs, boolean autoPlay) {
+        releasePreviewPlayer();
+        currentPreviewUri = uri;
+        pendingPreviewSeekMs = Math.min(Math.max(0, seekMs), Integer.MAX_VALUE);
+        playWhenPrepared = autoPlay;
+        previewPrepared = false;
+        if (currentView != null) currentView.setText("当前位置：" + formatClock(pendingPreviewSeekMs));
+        if (previewSurface == null) return;
+
+        MediaPlayer player = new MediaPlayer();
+        previewPlayer = player;
+        player.setOnPreparedListener(mp -> {
+            if (previewPlayer != mp) return;
+            previewPrepared = true;
+            int d = mp.getDuration();
+            if (!previewingOutput && d > 0 && durationMs <= 0) setDurationMs(d, true);
+            int seekTo = (int) Math.min(pendingPreviewSeekMs, Integer.MAX_VALUE);
+            if (seekTo > 0) {
+                try { mp.seekTo(seekTo); } catch (Exception ex) { appendLog("预览定位失败：" + ex.getMessage()); }
+            }
+            if (currentView != null) currentView.setText("当前位置：" + formatClock(pendingPreviewSeekMs));
+            if (playWhenPrepared) {
+                try {
+                    hidePreviewOverlay();
+                    mp.start();
+                    if (playButton != null) playButton.setText("暂停");
+                } catch (Exception ex) {
+                    appendLog("预览播放失败：" + ex.getMessage());
+                }
+            }
+        });
+        player.setOnVideoSizeChangedListener((mp, width, height) -> {
+            if (previewPlayer == mp && width > 0 && height > 0) appendLog("预览尺寸：" + width + "x" + height);
+        });
+        player.setOnCompletionListener(mp -> {
+            if (previewPlayer != mp) return;
+            playingRange = false;
+            playWhenPrepared = false;
+            if (playButton != null) playButton.setText("播放 / 暂停");
+            showPreviewOverlay("播放结束");
+        });
+        player.setOnErrorListener((mp, what, extra) -> {
+            if (previewPlayer != mp) return true;
+            previewPrepared = false;
+            playWhenPrepared = false;
+            if (playButton != null) playButton.setText("播放 / 暂停");
+            showPreviewOverlay("系统播放器无法预览此格式\n但仍可尝试无重编码裁剪");
+            appendLog("系统 MediaPlayer 预览失败：what=" + what + " extra=" + extra);
+            return true;
+        });
+
+        try {
+            player.setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                    .build());
+            player.setSurface(previewSurface);
+            player.setDataSource(this, uri);
+            player.prepareAsync();
+        } catch (Exception ex) {
+            if (previewPlayer == player) previewPlayer = null;
+            try { player.release(); } catch (Exception ignored) {}
+            previewPrepared = false;
+            playWhenPrepared = false;
+            showPreviewOverlay("系统播放器无法预览此格式\n但仍可尝试无重编码裁剪");
+            appendLog("准备预览失败：" + ex.getMessage());
+        }
+    }
+
+    private void startPreviewAt(long ms) {
+        Uri target = currentPreviewUri != null ? currentPreviewUri : inputUri;
+        if (target == null) return;
+        pendingPreviewSeekMs = Math.min(Math.max(0, ms), Integer.MAX_VALUE);
+        playWhenPrepared = true;
+        hidePreviewOverlay();
+        if (previewPlayer == null) {
+            preparePreviewPlayer(target, pendingPreviewSeekMs, true);
+            return;
+        }
+        if (!previewPrepared) return;
+        try {
+            previewPlayer.seekTo((int) pendingPreviewSeekMs);
+            previewPlayer.start();
+            if (playButton != null) playButton.setText("暂停");
+        } catch (Exception ex) {
+            appendLog("预览播放失败，重新准备播放器：" + ex.getMessage());
+            preparePreviewPlayer(target, pendingPreviewSeekMs, true);
+        }
+    }
+
+    private void pausePreviewPlayback() {
+        rememberPreviewPosition();
+        playWhenPrepared = false;
+        try {
+            if (previewPlayer != null && previewPrepared && previewPlayer.isPlaying()) {
+                previewPlayer.pause();
+                if (playButton != null) playButton.setText("播放 / 暂停");
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void rememberPreviewPosition() {
+        try {
+            if (previewPlayer != null && previewPrepared) {
+                pendingPreviewSeekMs = Math.max(0, previewPlayer.getCurrentPosition());
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private int getPreviewPosition() {
+        try {
+            if (previewPlayer != null && previewPrepared) return Math.max(0, previewPlayer.getCurrentPosition());
+        } catch (Exception ignored) {
+        }
+        return (int) Math.min(Math.max(0, pendingPreviewSeekMs), Integer.MAX_VALUE);
+    }
+
+    private void releasePreviewPlayer() {
+        previewPrepared = false;
+        playWhenPrepared = false;
+        if (previewPlayer != null) {
+            try { previewPlayer.release(); } catch (Exception ignored) {}
+            previewPlayer = null;
+        }
+    }
+
+    private void releasePreviewSurface() {
+        if (previewSurface != null) {
+            try { previewSurface.release(); } catch (Exception ignored) {}
+            previewSurface = null;
+        }
     }
 
     private void setDurationMs(long value, boolean resetRange) {
@@ -794,12 +955,12 @@ public class MainActivity extends Activity {
 
     private void setStartFromCurrent() {
         if (inputUri == null) return;
-        setStartMs(videoView.getCurrentPosition(), true, true);
+        setStartMs(getPreviewPosition(), true, true);
     }
 
     private void setEndFromCurrent() {
         if (inputUri == null) return;
-        setEndMs(videoView.getCurrentPosition(), true, true);
+        setEndMs(getPreviewPosition(), true, true);
     }
 
     private void applyManualTimes() {
@@ -863,9 +1024,15 @@ public class MainActivity extends Activity {
 
     private void seekPreviewTo(long ms) {
         if (currentPreviewUri == null && inputUri == null) return;
-        int pos = (int) Math.min(Math.max(0, ms), Integer.MAX_VALUE);
+        long pos = Math.min(Math.max(0, ms), Integer.MAX_VALUE);
+        pendingPreviewSeekMs = pos;
         try {
-            videoView.seekTo(pos);
+            if (previewPlayer == null) {
+                Uri target = currentPreviewUri != null ? currentPreviewUri : inputUri;
+                if (target != null) preparePreviewPlayer(target, pos, false);
+            } else if (previewPrepared) {
+                previewPlayer.seekTo((int) pos);
+            }
             currentView.setText("当前位置：" + formatClock(ms));
         } catch (Exception ignored) {
         }
@@ -874,38 +1041,33 @@ public class MainActivity extends Activity {
     private void togglePlay() {
         if (currentPreviewUri == null && inputUri == null) return;
         playingRange = false;
-        if (videoView.isPlaying()) {
-            videoView.pause();
+        if (previewPlayer != null && previewPrepared && previewPlayer.isPlaying()) {
+            rememberPreviewPosition();
+            previewPlayer.pause();
             playButton.setText("播放 / 暂停");
         } else {
-            hidePreviewOverlay();
-            videoView.start();
-            playButton.setText("暂停");
+            startPreviewAt(pendingPreviewSeekMs);
         }
     }
 
     private void playSelectedRange() {
         if (inputUri == null) return;
         if (previewingOutput) {
-            hidePreviewOverlay();
-            seekPreviewTo(0);
-            videoView.start();
-            playButton.setText("暂停");
+            playingRange = false;
+            startPreviewAt(0);
             return;
         }
         playingRange = true;
-        seekPreviewTo(startMs);
-        hidePreviewOverlay();
-        videoView.start();
-        playButton.setText("暂停");
+        startPreviewAt(startMs);
     }
 
     private void updatePlaybackProgress() {
-        if (videoView == null || (currentPreviewUri == null && inputUri == null)) return;
-        int pos = videoView.getCurrentPosition();
+        if (previewPlayer == null || !previewPrepared || (currentPreviewUri == null && inputUri == null)) return;
+        int pos = getPreviewPosition();
+        pendingPreviewSeekMs = pos;
         currentView.setText("当前位置：" + formatClock(pos));
-        if (!previewingOutput && playingRange && videoView.isPlaying() && pos >= endMs) {
-            videoView.pause();
+        if (!previewingOutput && playingRange && previewPlayer.isPlaying() && pos >= endMs) {
+            previewPlayer.pause();
             playingRange = false;
             seekPreviewTo(startMs);
             playButton.setText("播放 / 暂停");
