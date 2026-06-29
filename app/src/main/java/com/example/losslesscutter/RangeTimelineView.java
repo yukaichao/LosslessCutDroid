@@ -11,7 +11,7 @@ import android.view.View;
 
 public class RangeTimelineView extends View {
     public interface OnRangeChangeListener {
-        void onRangeChanged(long startMs, long endMs, boolean fromUser);
+        void onRangeChanged(long startMs, long endMs, long previewMs, boolean fromUser);
     }
 
     private static final int NONE = 0;
@@ -139,19 +139,24 @@ public class RangeTimelineView extends View {
     private void updateFromDrag(float x) {
         if (activeMode == NONE) return;
         long minGap = Math.max(1, Math.min(1000, durationMs));
+        long previewMs;
         if (activeMode == START) {
             startMs = clamp(xToTime(x), 0, endMs - minGap);
+            previewMs = startMs;
         } else if (activeMode == END) {
             endMs = clamp(xToTime(x), startMs + minGap, durationMs);
+            previewMs = endMs;
         } else {
+            long fingerTime = xToTime(x);
             long delta = xToTime(x) - xToTime(lastX);
             long length = endMs - startMs;
             long nextStart = clamp(startMs + delta, 0, durationMs - length);
             startMs = nextStart;
             endMs = nextStart + length;
+            previewMs = clamp(fingerTime, startMs, endMs);
         }
         invalidate();
-        if (listener != null) listener.onRangeChanged(startMs, endMs, true);
+        if (listener != null) listener.onRangeChanged(startMs, endMs, previewMs, true);
     }
 
     private float timeToX(long timeMs) {

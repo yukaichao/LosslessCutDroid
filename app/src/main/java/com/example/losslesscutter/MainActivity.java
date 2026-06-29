@@ -10,6 +10,7 @@ import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
 import android.media.AudioAttributes;
 import android.media.MediaMetadataRetriever;
@@ -61,6 +62,8 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     private static final int REQ_PICK_VIDEO = 1001;
     private static final int REQ_CREATE_OUTPUT = 1002;
+    private static final long FRAME_WINDOW_BEFORE_MS = 3000;
+    private static final long FRAME_WINDOW_AFTER_MS = 7000;
 
     private static final String PREFS_NAME = "output_picker_state";
     private static final String KEY_PENDING_PICKER = "pending_picker";
@@ -78,6 +81,7 @@ public class MainActivity extends Activity {
     private static final String KEY_BEFORE_TEXT = "before_text";
     private static final String KEY_AFTER_TEXT = "after_text";
     private static final String KEY_PREVIEWING_OUTPUT = "previewing_output";
+    private static final String KEY_RANGE_MODE = "range_mode";
     private static final String KEY_SCREEN = "screen";
     private static final String KEY_EXPORT_MODE = "export_mode";
     private static final String KEY_BACKEND = "backend";
@@ -95,6 +99,7 @@ public class MainActivity extends Activity {
     private static final long PENDING_STATE_TTL_MS = 10L * 60L * 1000L;
 
     private enum AppScreen { HOME, EDITOR, EXPORT }
+    private enum RangeMode { MANUAL, CENTER, CURRENT }
     private enum ExportMode { COPY, ENCODE }
     private enum EncoderBackend { HARDWARE, FFMPEG }
 
@@ -144,6 +149,7 @@ public class MainActivity extends Activity {
     private View editorScreen;
     private View exportScreen;
     private TextView homeStatusText;
+    private View previewFrame;
     private TextView inputText;
     private TextureView previewTextureView;
     private ImageView previewImageView;
@@ -154,6 +160,16 @@ public class MainActivity extends Activity {
     private Button playRangeButton;
     private Button previewOutputButton;
     private Button frameModeButton;
+    private View rangeCard;
+    private View goExportButton;
+    private Button manualRangeTab;
+    private Button centerRangeTab;
+    private Button currentRangeTab;
+    private View manualRangePanel;
+    private View centerRangePanel;
+    private View currentRangePanel;
+    private View applyTimesButton;
+    private View applyCenterButton;
     private RangeTimelineView timelineView;
     private TextView startLabel;
     private TextView endLabel;
@@ -188,6 +204,13 @@ public class MainActivity extends Activity {
     private TextView statusText;
     private TextView logText;
     private Button toggleLogButton;
+    private FrameLayout frameFullscreenOverlay;
+    private ImageView fullscreenFrameImage;
+    private TextView fullscreenFrameOverlay;
+    private Button frameExitButton;
+    private Button frameHomeButton;
+    private Button frameSetStartButton;
+    private Button frameSetEndButton;
 
     private Uri inputUri;
     private Uri outputUri;
@@ -199,6 +222,7 @@ public class MainActivity extends Activity {
     private long endMs;
     private boolean playingRange;
     private AppScreen currentScreen = AppScreen.HOME;
+    private RangeMode rangeMode = RangeMode.MANUAL;
     private final ExportSettings exportSettings = new ExportSettings();
     private final FfmpegCapabilities capabilities = new FfmpegCapabilities();
 
@@ -208,6 +232,8 @@ public class MainActivity extends Activity {
     private boolean playWhenPrepared;
     private long pendingPreviewSeekMs;
     private float playbackSpeed = 1f;
+    private int previewVideoWidth;
+    private int previewVideoHeight;
 
     private ScaleGestureDetector scaleGestureDetector;
     private float previewScale = 1f;
@@ -224,6 +250,8 @@ public class MainActivity extends Activity {
     private File frameWorkDir;
     private File frameInputFile;
     private int frameRequestSerial;
+    private long frameWindowStartMs = -1;
+    private long frameWindowEndMs = -1;
 
     private boolean detailLogVisible;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -278,11 +306,29 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    @Override
+    public void onBackPressed() {
+        if (frameMode || isFrameFullscreenVisible()) {
+            exitFrameMode(true);
+            return;
+        }
+        if (currentScreen == AppScreen.EXPORT) {
+            showScreen(AppScreen.EDITOR);
+            return;
+        }
+        if (currentScreen == AppScreen.EDITOR) {
+            goHome();
+            return;
+        }
+        super.onBackPressed();
+    }
+
     private void bindViews() {
         homeScreen = findViewById(R.id.homeScreen);
         editorScreen = findViewById(R.id.editorScreen);
         exportScreen = findViewById(R.id.exportScreen);
         homeStatusText = findViewById(R.id.homeStatusText);
+        previewFrame = findViewById(R.id.previewFrame);
         inputText = findViewById(R.id.inputText);
         previewTextureView = findViewById(R.id.previewTexture);
         previewImageView = findViewById(R.id.previewImage);
@@ -293,6 +339,16 @@ public class MainActivity extends Activity {
         playRangeButton = findViewById(R.id.playRangeButton);
         previewOutputButton = findViewById(R.id.previewOutputButton);
         frameModeButton = findViewById(R.id.frameModeButton);
+        rangeCard = findViewById(R.id.rangeCard);
+        goExportButton = findViewById(R.id.goExportButton);
+        manualRangeTab = findViewById(R.id.manualRangeTab);
+        centerRangeTab = findViewById(R.id.centerRangeTab);
+        currentRangeTab = findViewById(R.id.currentRangeTab);
+        manualRangePanel = findViewById(R.id.manualRangePanel);
+        centerRangePanel = findViewById(R.id.centerRangePanel);
+        currentRangePanel = findViewById(R.id.currentRangePanel);
+        applyTimesButton = findViewById(R.id.applyTimesButton);
+        applyCenterButton = findViewById(R.id.applyCenterButton);
         timelineView = findViewById(R.id.timelineView);
         startLabel = findViewById(R.id.startLabel);
         endLabel = findViewById(R.id.endLabel);
@@ -327,6 +383,13 @@ public class MainActivity extends Activity {
         statusText = findViewById(R.id.statusText);
         logText = findViewById(R.id.logText);
         toggleLogButton = findViewById(R.id.toggleLogButton);
+        frameFullscreenOverlay = findViewById(R.id.frameFullscreenOverlay);
+        fullscreenFrameImage = findViewById(R.id.fullscreenFrameImage);
+        fullscreenFrameOverlay = findViewById(R.id.fullscreenFrameOverlay);
+        frameExitButton = findViewById(R.id.frameExitButton);
+        frameHomeButton = findViewById(R.id.frameHomeButton);
+        frameSetStartButton = findViewById(R.id.frameSetStartButton);
+        frameSetEndButton = findViewById(R.id.frameSetEndButton);
     }
 
     private void configureUi() {
@@ -344,7 +407,7 @@ public class MainActivity extends Activity {
         findViewById(R.id.openVideoButton).setOnClickListener(v -> pickVideo());
         findViewById(R.id.aboutButtonMain).setOnClickListener(v -> showAboutDialog());
         findViewById(R.id.editorAboutButton).setOnClickListener(v -> showAboutDialog());
-        findViewById(R.id.editorBackButton).setOnClickListener(v -> showScreen(AppScreen.HOME));
+        findViewById(R.id.editorBackButton).setOnClickListener(v -> goHome());
         findViewById(R.id.exportBackButton).setOnClickListener(v -> showScreen(AppScreen.EDITOR));
         playButton.setOnClickListener(v -> togglePlay());
         playRangeButton.setOnClickListener(v -> playSelectedRange());
@@ -355,11 +418,14 @@ public class MainActivity extends Activity {
         frameModeButton.setOnClickListener(v -> toggleFrameMode());
         findViewById(R.id.previewInputButton).setOnClickListener(v -> previewInput());
         previewOutputButton.setOnClickListener(v -> previewOutput());
-        findViewById(R.id.applyTimesButton).setOnClickListener(v -> applyManualTimes());
-        findViewById(R.id.applyCenterButton).setOnClickListener(v -> applyCenterRange());
+        manualRangeTab.setOnClickListener(v -> setRangeMode(RangeMode.MANUAL));
+        centerRangeTab.setOnClickListener(v -> setRangeMode(RangeMode.CENTER));
+        currentRangeTab.setOnClickListener(v -> setRangeMode(RangeMode.CURRENT));
+        applyTimesButton.setOnClickListener(v -> applyManualTimes());
+        applyCenterButton.setOnClickListener(v -> applyCenterRange());
         findViewById(R.id.setStartButton).setOnClickListener(v -> setStartFromCurrent());
         findViewById(R.id.setEndButton).setOnClickListener(v -> setEndFromCurrent());
-        findViewById(R.id.goExportButton).setOnClickListener(v -> {
+        goExportButton.setOnClickListener(v -> {
             if (inputUri == null) {
                 Toast.makeText(this, "先选择视频", Toast.LENGTH_SHORT).show();
                 return;
@@ -374,12 +440,20 @@ public class MainActivity extends Activity {
         toggleLogButton.setOnClickListener(v -> toggleDetailLog());
         findViewById(R.id.copyLogButton).setOnClickListener(v -> copyLogsToClipboard());
         findViewById(R.id.clearLogButton).setOnClickListener(v -> clearLog());
+        frameExitButton.setOnClickListener(v -> exitFrameMode(true));
+        frameHomeButton.setOnClickListener(v -> goHome());
+        frameSetStartButton.setOnClickListener(v -> setStartFromCurrent());
+        frameSetEndButton.setOnClickListener(v -> setEndFromCurrent());
+        setRangeMode(RangeMode.MANUAL);
 
-        timelineView.setOnRangeChangeListener((s, e, fromUser) -> {
+        timelineView.setOnRangeChangeListener((s, e, previewMs, fromUser) -> {
             startMs = s;
             endMs = e;
             syncRangeViews(true);
-            if (fromUser) seekPreviewTo(startMs);
+            if (fromUser) {
+                pausePreviewPlayback();
+                seekPreviewTo(previewMs);
+            }
         });
         exportModeGroup.setOnCheckedChangeListener((group, checkedId) -> {
             exportSettings.mode = checkedId == R.id.encodeModeRadio ? ExportMode.ENCODE : ExportMode.COPY;
@@ -398,6 +472,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onSurfaceTextureSizeChanged(SurfaceTexture surfaceTexture, int width, int height) {
+                applyPreviewTransform();
             }
 
             @Override
@@ -412,6 +487,7 @@ public class MainActivity extends Activity {
             public void onSurfaceTextureUpdated(SurfaceTexture surfaceTexture) {
             }
         });
+        previewFrame.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> applyPreviewTransform());
         setupPreviewTouch();
         populateCodecSpinners();
         updateExportUi();
@@ -460,6 +536,8 @@ public class MainActivity extends Activity {
         };
         previewTextureView.setOnTouchListener(listener);
         previewImageView.setOnTouchListener(listener);
+        fullscreenFrameImage.setOnTouchListener(listener);
+        fullscreenFrameOverlay.setOnTouchListener(listener);
     }
 
     private void saveStateToBundle(Bundle out) {
@@ -476,6 +554,7 @@ public class MainActivity extends Activity {
         out.putString(KEY_BEFORE_TEXT, beforeEdit.getText().toString());
         out.putString(KEY_AFTER_TEXT, afterEdit.getText().toString());
         out.putBoolean(KEY_PREVIEWING_OUTPUT, previewingOutput);
+        out.putString(KEY_RANGE_MODE, rangeMode.name());
         out.putString(KEY_SCREEN, currentScreen.name());
         out.putLong(KEY_STATE_TIME, System.currentTimeMillis());
         putExportSettings(out);
@@ -490,6 +569,11 @@ public class MainActivity extends Activity {
         startMs = Math.max(0, state.getLong(KEY_START_MS, 0));
         endMs = Math.max(0, state.getLong(KEY_END_MS, 0));
         previewingOutput = state.getBoolean(KEY_PREVIEWING_OUTPUT, false);
+        try {
+            rangeMode = RangeMode.valueOf(state.getString(KEY_RANGE_MODE, RangeMode.MANUAL.name()));
+        } catch (Exception ignored) {
+            rangeMode = RangeMode.MANUAL;
+        }
         restoreExportSettings(state);
 
         if (durationMs > 0 && (endMs <= 0 || endMs > durationMs)) endMs = durationMs;
@@ -501,10 +585,12 @@ public class MainActivity extends Activity {
         beforeEdit.setText(nonEmpty(state.getString(KEY_BEFORE_TEXT, null), "5"));
         afterEdit.setText(nonEmpty(state.getString(KEY_AFTER_TEXT, null), "5"));
         applyExportSettingsToUi();
+        setRangeMode(rangeMode);
         captureRangeFromEditsQuietly();
         syncRangeViews(false);
         syncExportSummary();
         updateInputOutputLabels();
+        setOutputPreviewMode(previewingOutput);
 
         Uri previewTarget = currentPreviewUri != null ? currentPreviewUri : inputUri;
         if (previewTarget != null) {
@@ -569,7 +655,13 @@ public class MainActivity extends Activity {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().clear().apply();
     }
 
+    private void goHome() {
+        exitFrameMode(false);
+        showScreen(AppScreen.HOME);
+    }
+
     private void showScreen(AppScreen screen) {
+        if (screen != AppScreen.EDITOR) exitFrameMode(false);
         currentScreen = screen;
         homeScreen.setVisibility(screen == AppScreen.HOME ? View.VISIBLE : View.GONE);
         editorScreen.setVisibility(screen == AppScreen.EDITOR ? View.VISIBLE : View.GONE);
@@ -638,6 +730,7 @@ public class MainActivity extends Activity {
     }
 
     private void loadInputPreview(Uri uri) {
+        setOutputPreviewMode(false);
         previewingOutput = false;
         currentPreviewUri = uri;
         playingRange = false;
@@ -662,6 +755,8 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "先选择视频", Toast.LENGTH_SHORT).show();
             return;
         }
+        exitFrameMode(false);
+        setOutputPreviewMode(false);
         previewingOutput = false;
         currentPreviewUri = inputUri;
         playingRange = false;
@@ -677,7 +772,9 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "还没有输出文件", Toast.LENGTH_SHORT).show();
             return;
         }
+        exitFrameMode(false);
         previewingOutput = true;
+        setOutputPreviewMode(true);
         currentPreviewUri = outputUri;
         playingRange = false;
         playButton.setText("播放");
@@ -717,6 +814,9 @@ public class MainActivity extends Activity {
         pendingPreviewSeekMs = clamp(seekMs, 0, Integer.MAX_VALUE);
         playWhenPrepared = autoPlay;
         previewPrepared = false;
+        previewVideoWidth = 0;
+        previewVideoHeight = 0;
+        applyPreviewTransform();
         currentText.setText("当前位置：" + formatClock(pendingPreviewSeekMs));
         if (previewSurface == null) return;
 
@@ -747,7 +847,11 @@ public class MainActivity extends Activity {
             }
         });
         player.setOnVideoSizeChangedListener((mp, width, height) -> {
-            if (previewPlayer == mp && width > 0 && height > 0) appendLog("预览尺寸：" + width + "x" + height);
+            if (previewPlayer != mp || width <= 0 || height <= 0) return;
+            previewVideoWidth = width;
+            previewVideoHeight = height;
+            applyPreviewTransform();
+            appendLog("预览尺寸：" + width + "x" + height);
         });
         player.setOnCompletionListener(mp -> {
             if (previewPlayer != mp) return;
@@ -803,8 +907,7 @@ public class MainActivity extends Activity {
 
     private void togglePlay() {
         if (currentPreviewUri == null && inputUri == null) return;
-        frameMode = false;
-        updateFrameModeButton();
+        exitFrameMode(false);
         playingRange = false;
         if (previewPlayer != null && previewPrepared && previewPlayer.isPlaying()) {
             rememberPreviewPosition();
@@ -817,8 +920,7 @@ public class MainActivity extends Activity {
 
     private void playSelectedRange() {
         if (inputUri == null) return;
-        frameMode = false;
-        updateFrameModeButton();
+        exitFrameMode(false);
         if (previewingOutput) {
             playingRange = false;
             startPreviewAt(0);
@@ -883,6 +985,7 @@ public class MainActivity extends Activity {
         long pos = clamp(ms, 0, Integer.MAX_VALUE);
         pendingPreviewSeekMs = pos;
         try {
+            if (!frameMode) hidePreviewOverlay();
             if (previewPlayer == null) {
                 Uri target = currentPreviewUri != null ? currentPreviewUri : inputUri;
                 if (target != null) preparePreviewPlayer(target, pos, false);
@@ -925,10 +1028,16 @@ public class MainActivity extends Activity {
     }
 
     private void showPreviewFrame(Uri uri, long ms, String text) {
-        previewOverlayText.setText(text == null ? "预览帧" : text);
+        String label = text == null ? "预览帧" : text;
+        previewOverlayText.setText(label);
         previewImageView.setVisibility(View.VISIBLE);
         previewImageView.setImageBitmap(null);
         previewOverlayText.setVisibility(View.VISIBLE);
+        if (isFrameFullscreenVisible()) {
+            fullscreenFrameImage.setImageBitmap(null);
+            fullscreenFrameOverlay.setText(label);
+            fullscreenFrameOverlay.setVisibility(View.VISIBLE);
+        }
         executor.execute(() -> {
             Bitmap frame = null;
             MediaMetadataRetriever retriever = new MediaMetadataRetriever();
@@ -942,8 +1051,12 @@ public class MainActivity extends Activity {
             }
             Bitmap finalFrame = frame;
             mainHandler.post(() -> {
-                if (finalFrame != null) previewImageView.setImageBitmap(finalFrame);
+                if (finalFrame != null) {
+                    previewImageView.setImageBitmap(finalFrame);
+                    if (isFrameFullscreenVisible()) fullscreenFrameImage.setImageBitmap(finalFrame);
+                }
                 previewOverlayText.setVisibility(View.VISIBLE);
+                if (isFrameFullscreenVisible()) fullscreenFrameOverlay.setVisibility(View.VISIBLE);
             });
         });
     }
@@ -957,6 +1070,10 @@ public class MainActivity extends Activity {
         previewImageView.setVisibility(View.VISIBLE);
         previewOverlayText.setText(text);
         previewOverlayText.setVisibility(View.VISIBLE);
+        if (isFrameFullscreenVisible()) {
+            fullscreenFrameOverlay.setText(text);
+            fullscreenFrameOverlay.setVisibility(View.VISIBLE);
+        }
     }
 
     private void resetPreviewTransform() {
@@ -967,6 +1084,7 @@ public class MainActivity extends Activity {
     }
 
     private void applyPreviewTransform() {
+        applyTextureAspectTransform();
         previewTextureView.setScaleX(previewScale);
         previewTextureView.setScaleY(previewScale);
         previewTextureView.setTranslationX(previewTranslationX);
@@ -977,22 +1095,79 @@ public class MainActivity extends Activity {
         previewImageView.setTranslationY(previewTranslationY);
     }
 
+    private void applyTextureAspectTransform() {
+        Matrix matrix = new Matrix();
+        int viewWidth = previewTextureView.getWidth();
+        int viewHeight = previewTextureView.getHeight();
+        if (viewWidth > 0 && viewHeight > 0 && previewVideoWidth > 0 && previewVideoHeight > 0) {
+            float viewAspect = viewWidth / (float) viewHeight;
+            float videoAspect = previewVideoWidth / (float) previewVideoHeight;
+            if (videoAspect > viewAspect) {
+                float scaleY = viewAspect / videoAspect;
+                matrix.setScale(1f, scaleY, viewWidth / 2f, viewHeight / 2f);
+            } else {
+                float scaleX = videoAspect / viewAspect;
+                matrix.setScale(scaleX, 1f, viewWidth / 2f, viewHeight / 2f);
+            }
+        }
+        previewTextureView.setTransform(matrix);
+    }
+
     private void toggleFrameMode() {
         if (inputUri == null) return;
-        frameMode = !frameMode;
+        if (frameMode) exitFrameMode(true);
+        else enterFrameMode();
+    }
+
+    private void enterFrameMode() {
+        pausePreviewPlayback();
+        setOutputPreviewMode(false);
+        previewingOutput = false;
+        currentPreviewUri = inputUri;
+        releasePreviewPlayer();
+        frameMode = true;
         updateFrameModeButton();
-        if (frameMode) {
-            pausePreviewPlayback();
-            previewingOutput = false;
-            currentPreviewUri = inputUri;
-            ensureFrameIndex();
-        } else {
-            showPreviewOverlay("已退出逐帧模式");
-        }
+        showFrameFullscreenOverlay();
+        ensureFrameIndex();
+    }
+
+    private void exitFrameMode(boolean announce) {
+        if (!frameMode && !isFrameFullscreenVisible()) return;
+        frameMode = false;
+        frameIndexing = false;
+        updateFrameModeButton();
+        hideFrameFullscreenOverlay();
+        if (announce) showPreviewOverlay("已退出逐帧模式");
     }
 
     private void updateFrameModeButton() {
         frameModeButton.setText(frameMode ? "退出逐帧" : "逐帧模式");
+    }
+
+    private void showFrameFullscreenOverlay() {
+        frameFullscreenOverlay.setVisibility(View.VISIBLE);
+        fullscreenFrameOverlay.setText("正在进入逐帧模式...");
+        fullscreenFrameOverlay.setVisibility(View.VISIBLE);
+        fullscreenFrameImage.setScaleX(1f);
+        fullscreenFrameImage.setScaleY(1f);
+        fullscreenFrameImage.setTranslationX(0f);
+        fullscreenFrameImage.setTranslationY(0f);
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+
+    private void hideFrameFullscreenOverlay() {
+        frameFullscreenOverlay.setVisibility(View.GONE);
+        getWindow().getDecorView().setSystemUiVisibility(0);
+    }
+
+    private boolean isFrameFullscreenVisible() {
+        return frameFullscreenOverlay != null && frameFullscreenOverlay.getVisibility() == View.VISIBLE;
     }
 
     private void resetFrameModeState() {
@@ -1000,64 +1175,100 @@ public class MainActivity extends Activity {
         frameIndexing = false;
         frameTimesMs.clear();
         frameIndex = 0;
+        frameWindowStartMs = -1;
+        frameWindowEndMs = -1;
         updateFrameModeButton();
+        hideFrameFullscreenOverlay();
         if (frameWorkDir != null) deleteRecursively(frameWorkDir);
         frameWorkDir = null;
         frameInputFile = null;
     }
 
     private void ensureFrameIndex() {
-        if (!frameTimesMs.isEmpty()) {
-            frameIndex = nearestFrameIndex(getPreviewPosition());
-            renderExactFrame(frameTimesMs.get(frameIndex), "逐帧模式\n左半屏上一帧，右半屏下一帧");
+        ensureFrameWindow(getPreviewPosition(), true);
+    }
+
+    private void ensureFrameWindow(long centerMs, boolean renderNearest) {
+        if (!frameTimesMs.isEmpty() && centerMs >= frameWindowStartMs && centerMs <= frameWindowEndMs) {
+            if (renderNearest) {
+                frameIndex = nearestFrameIndex(centerMs);
+                renderExactFrame(frameTimesMs.get(frameIndex), frameWindowLabel());
+            }
             return;
         }
         if (frameIndexing) return;
         File ffprobe = getNativeExecutable("ffprobe");
         File ffmpeg = getNativeExecutable("ffmpeg");
         if (!ffprobe.exists() || !ffmpeg.exists()) {
+            exitFrameMode(false);
             setStatus("逐帧模式需要带解码能力的 FFmpeg / FFprobe");
             showPreviewOverlay("逐帧模式需要新版 FFmpeg\n请使用 CI 重新构建 APK");
             return;
         }
         frameIndexing = true;
-        showPreviewOverlay("正在建立逐帧索引...");
+        long windowStart = Math.max(0, centerMs - FRAME_WINDOW_BEFORE_MS);
+        long windowEnd = durationMs > 0
+                ? Math.min(durationMs, centerMs + FRAME_WINDOW_AFTER_MS)
+                : centerMs + FRAME_WINDOW_AFTER_MS;
+        showPreviewOverlay("正在读取附近关键帧...");
         executor.execute(() -> {
             try {
-                if (frameWorkDir != null) deleteRecursively(frameWorkDir);
-                frameWorkDir = new File(getCacheDir(), "frames-" + System.currentTimeMillis());
-                if (!frameWorkDir.mkdirs() && !frameWorkDir.exists()) throw new IllegalStateException("无法创建逐帧缓存目录");
-                frameInputFile = new File(frameWorkDir, sanitizeFileName(inputName));
-                copyUriToFile(inputUri, frameInputFile);
-                List<Long> frames = probeFrameTimes(ffprobe, frameInputFile);
-                if (frames.isEmpty()) throw new IllegalStateException("FFprobe 没有返回帧时间");
+                ensureFrameInputFile();
+                List<Long> frames = probeFrameTimes(ffprobe, frameInputFile, windowStart, windowEnd, true);
+                if (frames.isEmpty()) frames = probeFrameTimes(ffprobe, frameInputFile, windowStart, windowEnd, false);
+                if (frames.isEmpty()) throw new IllegalStateException("FFprobe 没有返回附近帧时间");
+                final List<Long> finalFrames = frames;
                 mainHandler.post(() -> {
+                    if (!frameMode) {
+                        frameIndexing = false;
+                        return;
+                    }
                     frameTimesMs.clear();
-                    frameTimesMs.addAll(frames);
-                    frameIndex = nearestFrameIndex(getPreviewPosition());
+                    frameTimesMs.addAll(finalFrames);
+                    frameWindowStartMs = windowStart;
+                    frameWindowEndMs = windowEnd;
+                    frameIndex = nearestFrameIndex(centerMs);
                     frameIndexing = false;
-                    setStatus("逐帧索引完成：" + frameTimesMs.size() + " 帧");
-                    renderExactFrame(frameTimesMs.get(frameIndex), "逐帧模式\n左半屏上一帧，右半屏下一帧");
+                    setStatus("已读取附近帧：" + frameTimesMs.size() + " 个");
+                    if (renderNearest) renderExactFrame(frameTimesMs.get(frameIndex), frameWindowLabel());
                 });
             } catch (Exception ex) {
                 mainHandler.post(() -> {
+                    if (!frameMode) {
+                        frameIndexing = false;
+                        return;
+                    }
                     frameIndexing = false;
-                    frameMode = false;
-                    updateFrameModeButton();
-                    setStatus("逐帧索引失败：" + ex.getMessage());
-                    showPreviewOverlay("逐帧索引失败\n" + ex.getMessage());
+                    exitFrameMode(false);
+                    setStatus("读取附近帧失败：" + ex.getMessage());
+                    showPreviewOverlay("读取附近帧失败\n" + ex.getMessage());
                 });
             }
         });
     }
 
-    private List<Long> probeFrameTimes(File ffprobe, File input) throws Exception {
+    private void ensureFrameInputFile() throws Exception {
+        if (frameInputFile != null && frameInputFile.exists()) return;
+        if (frameWorkDir != null) deleteRecursively(frameWorkDir);
+        frameWorkDir = new File(getCacheDir(), "frames-" + System.currentTimeMillis());
+        if (!frameWorkDir.mkdirs() && !frameWorkDir.exists()) throw new IllegalStateException("无法创建逐帧缓存目录");
+        frameInputFile = new File(frameWorkDir, sanitizeFileName(inputName));
+        copyUriToFile(inputUri, frameInputFile);
+    }
+
+    private List<Long> probeFrameTimes(File ffprobe, File input, long windowStartMs, long windowEndMs, boolean keyFramesOnly) throws Exception {
         List<String> cmd = new ArrayList<>();
         cmd.add(ffprobe.getAbsolutePath());
         cmd.add("-v");
         cmd.add("error");
+        if (keyFramesOnly) {
+            cmd.add("-skip_frame");
+            cmd.add("nokey");
+        }
         cmd.add("-select_streams");
         cmd.add("v:0");
+        cmd.add("-read_intervals");
+        cmd.add(formatSeconds(windowStartMs) + "%+" + formatSeconds(Math.max(1, windowEndMs - windowStartMs)));
         cmd.add("-show_entries");
         cmd.add("frame=best_effort_timestamp_time");
         cmd.add("-of");
@@ -1097,8 +1308,21 @@ public class MainActivity extends Activity {
             ensureFrameIndex();
             return;
         }
-        frameIndex = (int) clamp(frameIndex + delta, 0, frameTimesMs.size() - 1);
-        renderExactFrame(frameTimesMs.get(frameIndex), "第 " + (frameIndex + 1) + " / " + frameTimesMs.size() + " 帧");
+        int next = frameIndex + delta;
+        if (next >= 0 && next < frameTimesMs.size()) {
+            frameIndex = next;
+            renderExactFrame(frameTimesMs.get(frameIndex), frameWindowLabel());
+            return;
+        }
+        long center = delta < 0
+                ? Math.max(0, frameWindowStartMs - FRAME_WINDOW_AFTER_MS)
+                : (durationMs > 0 ? Math.min(durationMs, frameWindowEndMs + FRAME_WINDOW_BEFORE_MS) : frameWindowEndMs + FRAME_WINDOW_BEFORE_MS);
+        ensureFrameWindow(center, true);
+    }
+
+    private String frameWindowLabel() {
+        return "附近帧 " + (frameIndex + 1) + " / " + frameTimesMs.size()
+                + "\n左半屏上一帧，右半屏下一帧";
     }
 
     private void renderExactFrame(long ms, String label) {
@@ -1113,6 +1337,10 @@ public class MainActivity extends Activity {
         previewImageView.setVisibility(View.VISIBLE);
         previewOverlayText.setText(label);
         previewOverlayText.setVisibility(View.VISIBLE);
+        if (isFrameFullscreenVisible()) {
+            fullscreenFrameOverlay.setText(label);
+            fullscreenFrameOverlay.setVisibility(View.VISIBLE);
+        }
         executor.execute(() -> {
             File image = new File(frameWorkDir, "frame-" + request + ".jpg");
             try {
@@ -1135,7 +1363,9 @@ public class MainActivity extends Activity {
                 mainHandler.post(() -> {
                     if (request == frameRequestSerial && bitmap != null) {
                         previewImageView.setImageBitmap(bitmap);
+                        if (isFrameFullscreenVisible()) fullscreenFrameImage.setImageBitmap(bitmap);
                         previewOverlayText.setVisibility(View.VISIBLE);
+                        if (isFrameFullscreenVisible()) fullscreenFrameOverlay.setVisibility(View.VISIBLE);
                     }
                 });
             } catch (Exception ex) {
@@ -1248,9 +1478,48 @@ public class MainActivity extends Activity {
     }
 
     private void updateInputOutputLabels() {
-        inputText.setText(inputUri == null ? "未选择输入文件" : "输入：" + inputName + "\n" + inputUri);
+        updatePreviewHeaderLabel();
         outputText.setText(outputUri == null ? "未选择输出文件" : "输出：" + outputUri);
         previewOutputButton.setEnabled(outputUri != null);
+    }
+
+    private void updatePreviewHeaderLabel() {
+        if (inputUri == null) {
+            inputText.setText("未选择输入文件");
+        } else if (previewingOutput && outputUri != null) {
+            inputText.setText("输出预览：" + outputUri);
+        } else {
+            inputText.setText("输入：" + inputName + "\n" + inputUri);
+        }
+    }
+
+    private void setOutputPreviewMode(boolean outputMode) {
+        previewingOutput = outputMode && outputUri != null;
+        int editVisibility = previewingOutput ? View.GONE : View.VISIBLE;
+        rangeCard.setVisibility(editVisibility);
+        goExportButton.setVisibility(editVisibility);
+        timelineView.setEnabled(!previewingOutput);
+        updatePreviewHeaderLabel();
+    }
+
+    private void setRangeMode(RangeMode mode) {
+        rangeMode = mode;
+        boolean manual = mode == RangeMode.MANUAL;
+        boolean center = mode == RangeMode.CENTER;
+        boolean current = mode == RangeMode.CURRENT;
+        manualRangePanel.setVisibility(manual ? View.VISIBLE : View.GONE);
+        applyTimesButton.setVisibility(manual ? View.VISIBLE : View.GONE);
+        centerRangePanel.setVisibility(center ? View.VISIBLE : View.GONE);
+        applyCenterButton.setVisibility(center ? View.VISIBLE : View.GONE);
+        currentRangePanel.setVisibility(current ? View.VISIBLE : View.GONE);
+        setRangeTabSelected(manualRangeTab, manual);
+        setRangeTabSelected(centerRangeTab, center);
+        setRangeTabSelected(currentRangeTab, current);
+    }
+
+    private void setRangeTabSelected(Button button, boolean selected) {
+        button.setBackgroundResource(selected ? R.drawable.bg_primary_button : R.drawable.bg_secondary_button);
+        button.setTextColor(getColorCompat(selected ? android.R.color.white : R.color.app_text));
     }
 
     private void probeFfmpegCapabilitiesAsync() {
@@ -2023,8 +2292,8 @@ public class MainActivity extends Activity {
             startExportButton.setEnabled(true);
             chooseOutputButton.setEnabled(true);
             previewOutputButton.setEnabled(true);
-            previewOutput();
             showScreen(AppScreen.EDITOR);
+            previewOutput();
         });
     }
 
