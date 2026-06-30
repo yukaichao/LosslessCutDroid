@@ -282,7 +282,6 @@ public class MainActivity extends Activity {
     private float touchDownX;
     private float touchDownY;
     private boolean touchMoved;
-    private boolean previewPanning;
     private View activeTouchView;
 
     private boolean frameMode;
@@ -291,6 +290,7 @@ public class MainActivity extends Activity {
     private int frameIndex;
     private int frameCacheRequestSerial;
     private int previewFrameRequestSerial;
+    private int pendingFrameStepDelta;
     private long frameCacheStartMs = -1;
     private long frameCacheEndMs = -1;
     private long frameStepMs = FRAME_CACHE_FALLBACK_STEP_MS;
@@ -346,6 +346,7 @@ public class MainActivity extends Activity {
         frameMode = false;
         frameCacheRequestSerial++;
         previewFrameRequestSerial++;
+        pendingFrameStepDelta = 0;
         releasePreviewPlayer();
         releasePreviewSurface();
         releaseFrameRetrieverAsync();
@@ -549,7 +550,6 @@ public class MainActivity extends Activity {
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
             public boolean onScaleBegin(ScaleGestureDetector detector) {
-                previewPanning = false;
                 return true;
             }
 
@@ -558,12 +558,13 @@ public class MainActivity extends Activity {
                 float oldScale = previewScale;
                 previewScale = clampFloat(previewScale * detector.getScaleFactor(), 1f, 6f);
                 if (activeTouchView != null && oldScale > 0f && previewScale != oldScale) {
-                    float focusX = detector.getFocusX() - activeTouchView.getWidth() / 2f;
-                    float focusY = detector.getFocusY() - activeTouchView.getHeight() / 2f;
+                    View bounds = previewTransformBounds();
+                    float focusX = toBoundsCenteredX(activeTouchView, detector.getFocusX(), bounds);
+                    float focusY = toBoundsCenteredY(activeTouchView, detector.getFocusY(), bounds);
                     float ratio = previewScale / oldScale;
                     previewTranslationX = focusX - (focusX - previewTranslationX) * ratio;
                     previewTranslationY = focusY - (focusY - previewTranslationY) * ratio;
-                    clampPreviewTranslation(activeTouchView);
+                    clampPreviewTranslation(bounds);
                 }
                 applyPreviewTransform();
                 return true;
@@ -573,40 +574,48 @@ public class MainActivity extends Activity {
         View.OnTouchListener listener = (view, event) -> {
             activeTouchView = view;
             scaleGestureDetector.onTouchEvent(event);
-            if (event.getPointerCount() > 1) {
-                previewPanning = false;
+            int action = event.getActionMasked();
+            if (event.getPointerCount() > 1 && action != MotionEvent.ACTION_POINTER_UP
+                    && action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL) {
                 touchMoved = true;
+                lastTouchX = event.getRawX();
+                lastTouchY = event.getRawY();
                 return true;
             }
-            switch (event.getActionMasked()) {
+            switch (action) {
                 case MotionEvent.ACTION_DOWN:
-                    touchDownX = event.getX();
-                    touchDownY = event.getY();
-                    lastTouchX = event.getX();
-                    lastTouchY = event.getY();
+                    touchDownX = event.getRawX();
+                    touchDownY = event.getRawY();
+                    lastTouchX = touchDownX;
+                    lastTouchY = touchDownY;
                     touchMoved = false;
-                    previewPanning = previewScale > 1f;
                     return true;
                 case MotionEvent.ACTION_MOVE:
-                    if (Math.abs(event.getX() - touchDownX) > dp(6) || Math.abs(event.getY() - touchDownY) > dp(6)) {
+                    float rawX = event.getRawX();
+                    float rawY = event.getRawY();
+                    if (Math.abs(rawX - touchDownX) > dp(12) || Math.abs(rawY - touchDownY) > dp(12)) {
                         touchMoved = true;
                     }
-                    if (previewPanning && previewScale > 1f) {
-                        previewTranslationX += event.getX() - lastTouchX;
-                        previewTranslationY += event.getY() - lastTouchY;
-                        lastTouchX = event.getX();
-                        lastTouchY = event.getY();
-                        clampPreviewTranslation(view);
+                    if (!scaleGestureDetector.isInProgress() && previewScale > 1f) {
+                        previewTranslationX += rawX - lastTouchX;
+                        previewTranslationY += rawY - lastTouchY;
+                        lastTouchX = rawX;
+                        lastTouchY = rawY;
+                        clampPreviewTranslation(previewTransformBounds());
                         applyPreviewTransform();
                     }
                     return true;
+                case MotionEvent.ACTION_POINTER_UP:
+                    lastTouchX = event.getRawX();
+                    lastTouchY = event.getRawY();
+                    touchMoved = true;
+                    return true;
                 case MotionEvent.ACTION_UP:
                     if (frameMode && !touchMoved
-                            && Math.abs(event.getX() - touchDownX) < dp(10)
-                            && Math.abs(event.getY() - touchDownY) < dp(10)) {
-                        stepFrame(isTouchOnLeftScreenHalf(view, event) ? -1 : 1);
+                            && Math.abs(event.getRawX() - touchDownX) < dp(16)
+                            && Math.abs(event.getRawY() - touchDownY) < dp(16)) {
+                        stepFrame(isTouchOnLeftScreenHalf(event) ? -1 : 1);
                     }
-                    previewPanning = false;
                     return true;
                 default:
                     return true;
@@ -614,20 +623,44 @@ public class MainActivity extends Activity {
         };
         previewTextureView.setOnTouchListener(listener);
         previewImageView.setOnTouchListener(listener);
+        previewOverlayText.setOnTouchListener(listener);
         fullscreenFrameImage.setOnTouchListener(listener);
         fullscreenFrameOverlay.setOnTouchListener(listener);
     }
 
-    private boolean isTouchOnLeftScreenHalf(View touchedView, MotionEvent event) {
+    private boolean isTouchOnLeftScreenHalf(MotionEvent event) {
         if (isFrameFullscreenVisible()) {
-            int[] touchedLocation = new int[2];
             int[] overlayLocation = new int[2];
-            touchedView.getLocationOnScreen(touchedLocation);
             frameFullscreenOverlay.getLocationOnScreen(overlayLocation);
-            float screenXInOverlay = touchedLocation[0] + event.getX() - overlayLocation[0];
+            float screenXInOverlay = event.getRawX() - overlayLocation[0];
             return screenXInOverlay < frameFullscreenOverlay.getWidth() / 2f;
         }
-        return event.getX() < touchedView.getWidth() / 2f;
+        int[] previewLocation = new int[2];
+        previewFrame.getLocationOnScreen(previewLocation);
+        float screenXInPreview = event.getRawX() - previewLocation[0];
+        return screenXInPreview < previewFrame.getWidth() / 2f;
+    }
+
+    private View previewTransformBounds() {
+        return isFrameFullscreenVisible() ? frameFullscreenOverlay : previewFrame;
+    }
+
+    private float toBoundsCenteredX(View source, float sourceX, View bounds) {
+        if (source == null || bounds == null) return 0f;
+        int[] sourceLocation = new int[2];
+        int[] boundsLocation = new int[2];
+        source.getLocationOnScreen(sourceLocation);
+        bounds.getLocationOnScreen(boundsLocation);
+        return sourceLocation[0] + sourceX - boundsLocation[0] - bounds.getWidth() / 2f;
+    }
+
+    private float toBoundsCenteredY(View source, float sourceY, View bounds) {
+        if (source == null || bounds == null) return 0f;
+        int[] sourceLocation = new int[2];
+        int[] boundsLocation = new int[2];
+        source.getLocationOnScreen(sourceLocation);
+        bounds.getLocationOnScreen(boundsLocation);
+        return sourceLocation[1] + sourceY - boundsLocation[1] - bounds.getHeight() / 2f;
     }
 
     private void saveStateToBundle(Bundle out) {
@@ -943,6 +976,12 @@ public class MainActivity extends Activity {
             applyPreviewTransform();
             appendLog("预览尺寸：" + width + "x" + height);
         });
+        player.setOnInfoListener((mp, what, extra) -> {
+            if (previewPlayer == mp && what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                hidePreviewOverlay();
+            }
+            return false;
+        });
         player.setOnCompletionListener(mp -> {
             if (previewPlayer != mp) return;
             playingRange = false;
@@ -1089,6 +1128,8 @@ public class MainActivity extends Activity {
 
     private void updatePlaybackProgress() {
         if (previewPlayer == null || !previewPrepared || (currentPreviewUri == null && inputUri == null)) return;
+        if (!previewPlayer.isPlaying()) return;
+        hidePreviewOverlay();
         int pos = getPreviewPosition();
         pendingPreviewSeekMs = pos;
         currentText.setText("当前位置：" + formatClock(pos));
@@ -1149,6 +1190,9 @@ public class MainActivity extends Activity {
                 if (finalFrame != null) {
                     previewImageView.setImageBitmap(finalFrame);
                     if (isFrameFullscreenVisible()) fullscreenFrameImage.setImageBitmap(finalFrame);
+                    previewOverlayText.setVisibility(View.GONE);
+                    if (isFrameFullscreenVisible()) fullscreenFrameOverlay.setVisibility(View.GONE);
+                    return;
                 }
                 previewOverlayText.setVisibility(View.VISIBLE);
                 if (isFrameFullscreenVisible()) fullscreenFrameOverlay.setVisibility(View.VISIBLE);
@@ -1246,6 +1290,7 @@ public class MainActivity extends Activity {
         if (!frameMode && !isFrameFullscreenVisible()) return;
         frameMode = false;
         frameIndexing = false;
+        pendingFrameStepDelta = 0;
         updateFrameModeButton();
         hideFrameFullscreenOverlay();
         releaseFrameRetrieverAsync();
@@ -1282,6 +1327,7 @@ public class MainActivity extends Activity {
     private void resetFrameModeState() {
         frameMode = false;
         frameIndexing = false;
+        pendingFrameStepDelta = 0;
         clearFrameCache(true);
         frameIndex = 0;
         frameCacheStartMs = -1;
@@ -1359,7 +1405,12 @@ public class MainActivity extends Activity {
                     frameCacheEndMs = cacheEnd;
                     frameStepMs = decoder.frameStepMs;
                     frameDecoderInfo = decoder;
-                    frameIndex = nearestFrameIndex(renderNearest ? centerMs : pendingPreviewSeekMs);
+                    int targetIndex = nearestFrameIndex(renderNearest ? centerMs : pendingPreviewSeekMs);
+                    if (renderNearest && pendingFrameStepDelta != 0) {
+                        targetIndex = clampInt(targetIndex + pendingFrameStepDelta, 0, frameCache.size() - 1);
+                        pendingFrameStepDelta = 0;
+                    }
+                    frameIndex = targetIndex;
                     frameIndexing = false;
                     setStatus(frameDecoderStatusText(decoder) + "，已缓存 " + frameCache.size() + " 帧");
                     renderCachedFrame(frameIndex);
@@ -1397,6 +1448,11 @@ public class MainActivity extends Activity {
     private void stepFrame(int delta) {
         if (!frameMode) return;
         if (frameCache.isEmpty()) {
+            if (frameIndexing) {
+                pendingFrameStepDelta = clampInt(pendingFrameStepDelta + delta, -FRAME_CACHE_TARGET_FRAMES, FRAME_CACHE_TARGET_FRAMES);
+                setFrameStatus("正在缓存附近帧...");
+                return;
+            }
             ensureFrameIndex();
             return;
         }
@@ -1492,12 +1548,15 @@ public class MainActivity extends Activity {
 
     private void publishDecodedFrame(CachedFrame frame, int request, boolean render) {
         if (!frameMode || request != frameCacheRequestSerial) return;
+        long displayedTimeMs = pendingPreviewSeekMs;
         insertFrameSorted(frame);
         frameCacheStartMs = frameCache.get(0).timeMs;
         frameCacheEndMs = frameCache.get(frameCache.size() - 1).timeMs;
         if (render) {
             frameIndex = nearestFrameIndex(frame.timeMs);
             renderCachedFrame(frameIndex);
+        } else {
+            frameIndex = nearestFrameIndex(displayedTimeMs);
         }
     }
 
@@ -2571,6 +2630,11 @@ public class MainActivity extends Activity {
     }
 
     private float clampFloat(float value, float min, float max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private int clampInt(int value, int min, int max) {
+        if (max < min) return min;
         return Math.max(min, Math.min(max, value));
     }
 
