@@ -66,7 +66,7 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     private static final int REQ_PICK_VIDEO = 1001;
     private static final int REQ_CREATE_OUTPUT = 1002;
-    private static final int FRAME_CACHE_TARGET_FRAMES = 61;
+    private static final int FRAME_CACHE_TARGET_FRAMES = 31;
     private static final int FRAME_CACHE_REBUFFER_LOW_PERCENT = 20;
     private static final int FRAME_CACHE_REBUFFER_HIGH_PERCENT = 80;
     private static final int FRAME_CACHE_MAX_BITMAP_EDGE = 960;
