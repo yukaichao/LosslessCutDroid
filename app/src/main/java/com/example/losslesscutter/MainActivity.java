@@ -9,14 +9,18 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
 import android.media.AudioAttributes;
+import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.media.PlaybackParams;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -62,8 +66,11 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     private static final int REQ_PICK_VIDEO = 1001;
     private static final int REQ_CREATE_OUTPUT = 1002;
-    private static final long FRAME_WINDOW_BEFORE_MS = 3000;
-    private static final long FRAME_WINDOW_AFTER_MS = 7000;
+    private static final int FRAME_CACHE_TARGET_FRAMES = 61;
+    private static final int FRAME_CACHE_REBUFFER_LOW_PERCENT = 20;
+    private static final int FRAME_CACHE_REBUFFER_HIGH_PERCENT = 80;
+    private static final int FRAME_CACHE_MAX_BITMAP_EDGE = 960;
+    private static final long FRAME_CACHE_FALLBACK_STEP_MS = 40;
 
     private static final String PREFS_NAME = "output_picker_state";
     private static final String KEY_PENDING_PICKER = "pending_picker";
@@ -143,6 +150,24 @@ public class MainActivity extends Activity {
             }
             return false;
         }
+    }
+
+    private static class CachedFrame {
+        final long timeMs;
+        final Bitmap bitmap;
+
+        CachedFrame(long timeMs, Bitmap bitmap) {
+            this.timeMs = timeMs;
+            this.bitmap = bitmap;
+        }
+    }
+
+    private static class DecoderInfo {
+        String mime = "";
+        String name = "";
+        boolean hasDecoder;
+        boolean hardware;
+        long frameStepMs = FRAME_CACHE_FALLBACK_STEP_MS;
     }
 
     private View homeScreen;
@@ -241,17 +266,20 @@ public class MainActivity extends Activity {
     private float previewTranslationY;
     private float lastTouchX;
     private float lastTouchY;
+    private float touchDownX;
+    private float touchDownY;
+    private boolean touchMoved;
     private boolean previewPanning;
 
     private boolean frameMode;
     private boolean frameIndexing;
-    private final List<Long> frameTimesMs = new ArrayList<>();
+    private final List<CachedFrame> frameCache = new ArrayList<>();
     private int frameIndex;
-    private File frameWorkDir;
-    private File frameInputFile;
-    private int frameRequestSerial;
-    private long frameWindowStartMs = -1;
-    private long frameWindowEndMs = -1;
+    private int frameCacheRequestSerial;
+    private long frameCacheStartMs = -1;
+    private long frameCacheEndMs = -1;
+    private long frameStepMs = FRAME_CACHE_FALLBACK_STEP_MS;
+    private DecoderInfo frameDecoderInfo;
 
     private boolean detailLogVisible;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -302,7 +330,7 @@ public class MainActivity extends Activity {
         releasePreviewPlayer();
         releasePreviewSurface();
         executor.shutdownNow();
-        if (frameWorkDir != null) deleteRecursively(frameWorkDir);
+        clearFrameCache(true);
         super.onDestroy();
     }
 
@@ -511,11 +539,17 @@ public class MainActivity extends Activity {
             }
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
+                    touchDownX = event.getX();
+                    touchDownY = event.getY();
                     lastTouchX = event.getX();
                     lastTouchY = event.getY();
-                    previewPanning = !frameMode;
+                    touchMoved = false;
+                    previewPanning = previewScale > 1f;
                     return true;
                 case MotionEvent.ACTION_MOVE:
+                    if (Math.abs(event.getX() - touchDownX) > dp(6) || Math.abs(event.getY() - touchDownY) > dp(6)) {
+                        touchMoved = true;
+                    }
                     if (previewPanning && previewScale > 1f) {
                         previewTranslationX += event.getX() - lastTouchX;
                         previewTranslationY += event.getY() - lastTouchY;
@@ -525,7 +559,9 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
-                    if (frameMode && Math.abs(event.getX() - lastTouchX) < dp(10) && Math.abs(event.getY() - lastTouchY) < dp(10)) {
+                    if (frameMode && !touchMoved
+                            && Math.abs(event.getX() - touchDownX) < dp(10)
+                            && Math.abs(event.getY() - touchDownY) < dp(10)) {
                         stepFrame(event.getX() < view.getWidth() / 2f ? -1 : 1);
                     }
                     previewPanning = false;
@@ -1093,6 +1129,10 @@ public class MainActivity extends Activity {
         previewImageView.setScaleY(previewScale);
         previewImageView.setTranslationX(previewTranslationX);
         previewImageView.setTranslationY(previewTranslationY);
+        fullscreenFrameImage.setScaleX(previewScale);
+        fullscreenFrameImage.setScaleY(previewScale);
+        fullscreenFrameImage.setTranslationX(previewTranslationX);
+        fullscreenFrameImage.setTranslationY(previewTranslationY);
     }
 
     private void applyTextureAspectTransform() {
@@ -1148,10 +1188,7 @@ public class MainActivity extends Activity {
         frameFullscreenOverlay.setVisibility(View.VISIBLE);
         fullscreenFrameOverlay.setText("正在进入逐帧模式...");
         fullscreenFrameOverlay.setVisibility(View.VISIBLE);
-        fullscreenFrameImage.setScaleX(1f);
-        fullscreenFrameImage.setScaleY(1f);
-        fullscreenFrameImage.setTranslationX(0f);
-        fullscreenFrameImage.setTranslationY(0f);
+        resetPreviewTransform();
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_FULLSCREEN
                         | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -1173,208 +1210,336 @@ public class MainActivity extends Activity {
     private void resetFrameModeState() {
         frameMode = false;
         frameIndexing = false;
-        frameTimesMs.clear();
+        clearFrameCache(true);
         frameIndex = 0;
-        frameWindowStartMs = -1;
-        frameWindowEndMs = -1;
+        frameCacheStartMs = -1;
+        frameCacheEndMs = -1;
+        frameDecoderInfo = null;
         updateFrameModeButton();
         hideFrameFullscreenOverlay();
-        if (frameWorkDir != null) deleteRecursively(frameWorkDir);
-        frameWorkDir = null;
-        frameInputFile = null;
     }
 
     private void ensureFrameIndex() {
-        ensureFrameWindow(getPreviewPosition(), true);
+        ensureFrameCache(getPreviewPosition(), true);
     }
 
-    private void ensureFrameWindow(long centerMs, boolean renderNearest) {
-        if (!frameTimesMs.isEmpty() && centerMs >= frameWindowStartMs && centerMs <= frameWindowEndMs) {
+    private void ensureFrameCache(long centerMs, boolean renderNearest) {
+        if (!frameCache.isEmpty() && centerMs >= frameCacheStartMs && centerMs <= frameCacheEndMs) {
             if (renderNearest) {
                 frameIndex = nearestFrameIndex(centerMs);
-                renderExactFrame(frameTimesMs.get(frameIndex), frameWindowLabel());
+                renderCachedFrame(frameIndex);
             }
             return;
         }
         if (frameIndexing) return;
-        File ffprobe = getNativeExecutable("ffprobe");
-        File ffmpeg = getNativeExecutable("ffmpeg");
-        if (!ffprobe.exists() || !ffmpeg.exists()) {
-            exitFrameMode(false);
-            setStatus("逐帧模式需要带解码能力的 FFmpeg / FFprobe");
-            showPreviewOverlay("逐帧模式需要新版 FFmpeg\n请使用 CI 重新构建 APK");
-            return;
-        }
         frameIndexing = true;
-        long windowStart = Math.max(0, centerMs - FRAME_WINDOW_BEFORE_MS);
-        long windowEnd = durationMs > 0
-                ? Math.min(durationMs, centerMs + FRAME_WINDOW_AFTER_MS)
-                : centerMs + FRAME_WINDOW_AFTER_MS;
-        showPreviewOverlay("正在读取附近关键帧...");
+        int request = ++frameCacheRequestSerial;
+        setFrameStatus("正在缓存附近帧...");
         executor.execute(() -> {
             try {
-                ensureFrameInputFile();
-                List<Long> frames = probeFrameTimes(ffprobe, frameInputFile, windowStart, windowEnd, true);
-                if (frames.isEmpty()) frames = probeFrameTimes(ffprobe, frameInputFile, windowStart, windowEnd, false);
-                if (frames.isEmpty()) throw new IllegalStateException("FFprobe 没有返回附近帧时间");
-                final List<Long> finalFrames = frames;
+                DecoderInfo decoder = frameDecoderInfo != null ? frameDecoderInfo : detectDecoderInfo(inputUri);
+                List<Long> times = buildFrameCacheTimes(centerMs, decoder.frameStepMs);
+                List<CachedFrame> decoded = decodeFrameCache(inputUri, times, request, renderNearest);
+                if (decoded.isEmpty()) throw new IllegalStateException("系统解码器没有返回帧画面");
+                long cacheStart = decoded.get(0).timeMs;
+                long cacheEnd = decoded.get(decoded.size() - 1).timeMs;
                 mainHandler.post(() -> {
-                    if (!frameMode) {
+                    if (!frameMode || request != frameCacheRequestSerial) {
                         frameIndexing = false;
+                        recycleFrames(decoded);
                         return;
                     }
-                    frameTimesMs.clear();
-                    frameTimesMs.addAll(finalFrames);
-                    frameWindowStartMs = windowStart;
-                    frameWindowEndMs = windowEnd;
-                    frameIndex = nearestFrameIndex(centerMs);
+                    List<CachedFrame> oldFrames = new ArrayList<>(frameCache);
+                    frameCache.clear();
+                    frameCache.addAll(decoded);
+                    frameCacheStartMs = cacheStart;
+                    frameCacheEndMs = cacheEnd;
+                    frameStepMs = decoder.frameStepMs;
+                    frameDecoderInfo = decoder;
+                    frameIndex = nearestFrameIndex(renderNearest ? centerMs : pendingPreviewSeekMs);
                     frameIndexing = false;
-                    setStatus("已读取附近帧：" + frameTimesMs.size() + " 个");
-                    if (renderNearest) renderExactFrame(frameTimesMs.get(frameIndex), frameWindowLabel());
+                    setStatus(frameDecoderStatusText(decoder) + "，已缓存 " + frameCache.size() + " 帧");
+                    renderCachedFrame(frameIndex);
+                    hideFrameStatus();
+                    recycleFrames(oldFrames);
                 });
             } catch (Exception ex) {
                 mainHandler.post(() -> {
-                    if (!frameMode) {
+                    if (!frameMode || request != frameCacheRequestSerial) {
                         frameIndexing = false;
                         return;
                     }
                     frameIndexing = false;
-                    exitFrameMode(false);
-                    setStatus("读取附近帧失败：" + ex.getMessage());
-                    showPreviewOverlay("读取附近帧失败\n" + ex.getMessage());
+                    setStatus("逐帧缓存失败，尝试软件抽帧：" + ex.getMessage());
+                    setFrameStatus("系统解码缓存失败，正在尝试软件抽帧");
+                    renderSoftwareFallbackFrame(centerMs, request);
                 });
             }
         });
     }
 
-    private void ensureFrameInputFile() throws Exception {
-        if (frameInputFile != null && frameInputFile.exists()) return;
-        if (frameWorkDir != null) deleteRecursively(frameWorkDir);
-        frameWorkDir = new File(getCacheDir(), "frames-" + System.currentTimeMillis());
-        if (!frameWorkDir.mkdirs() && !frameWorkDir.exists()) throw new IllegalStateException("无法创建逐帧缓存目录");
-        frameInputFile = new File(frameWorkDir, sanitizeFileName(inputName));
-        copyUriToFile(inputUri, frameInputFile);
-    }
-
-    private List<Long> probeFrameTimes(File ffprobe, File input, long windowStartMs, long windowEndMs, boolean keyFramesOnly) throws Exception {
-        List<String> cmd = new ArrayList<>();
-        cmd.add(ffprobe.getAbsolutePath());
-        cmd.add("-v");
-        cmd.add("error");
-        if (keyFramesOnly) {
-            cmd.add("-skip_frame");
-            cmd.add("nokey");
-        }
-        cmd.add("-select_streams");
-        cmd.add("v:0");
-        cmd.add("-read_intervals");
-        cmd.add(formatSeconds(windowStartMs) + "%+" + formatSeconds(Math.max(1, windowEndMs - windowStartMs)));
-        cmd.add("-show_entries");
-        cmd.add("frame=best_effort_timestamp_time");
-        cmd.add("-of");
-        cmd.add("csv=p=0");
-        cmd.add(input.getAbsolutePath());
-        String output = runProcessCapture(cmd);
-        List<Long> frames = new ArrayList<>();
-        for (String line : output.split("\\R")) {
-            String clean = line.trim();
-            if (clean.isEmpty() || "N/A".equals(clean)) continue;
-            String first = clean.split(",", 2)[0].trim();
-            try {
-                long ms = Math.round(Double.parseDouble(first) * 1000.0);
-                if (frames.isEmpty() || ms > frames.get(frames.size() - 1)) frames.add(ms);
-            } catch (Exception ignored) {
-            }
-        }
-        return frames;
-    }
-
     private int nearestFrameIndex(long ms) {
-        if (frameTimesMs.isEmpty()) return 0;
+        if (frameCache.isEmpty()) return 0;
         int lo = 0;
-        int hi = frameTimesMs.size() - 1;
+        int hi = frameCache.size() - 1;
         while (lo < hi) {
             int mid = (lo + hi) >>> 1;
-            if (frameTimesMs.get(mid) < ms) lo = mid + 1;
+            if (frameCache.get(mid).timeMs < ms) lo = mid + 1;
             else hi = mid;
         }
-        if (lo > 0 && Math.abs(frameTimesMs.get(lo - 1) - ms) < Math.abs(frameTimesMs.get(lo) - ms)) return lo - 1;
+        if (lo > 0 && Math.abs(frameCache.get(lo - 1).timeMs - ms) < Math.abs(frameCache.get(lo).timeMs - ms)) return lo - 1;
         return lo;
     }
 
     private void stepFrame(int delta) {
         if (!frameMode) return;
-        if (frameTimesMs.isEmpty()) {
+        if (frameCache.isEmpty()) {
             ensureFrameIndex();
             return;
         }
         int next = frameIndex + delta;
-        if (next >= 0 && next < frameTimesMs.size()) {
+        if (next >= 0 && next < frameCache.size()) {
             frameIndex = next;
-            renderExactFrame(frameTimesMs.get(frameIndex), frameWindowLabel());
+            renderCachedFrame(frameIndex);
+            maybeRebufferFrameCache(delta);
             return;
         }
-        long center = delta < 0
-                ? Math.max(0, frameWindowStartMs - FRAME_WINDOW_AFTER_MS)
-                : (durationMs > 0 ? Math.min(durationMs, frameWindowEndMs + FRAME_WINDOW_BEFORE_MS) : frameWindowEndMs + FRAME_WINDOW_BEFORE_MS);
-        ensureFrameWindow(center, true);
+        long max = durationMs > 0 ? durationMs : Long.MAX_VALUE;
+        long center = clamp(getCurrentFrameTimeMs() + delta * frameStepMs * (FRAME_CACHE_TARGET_FRAMES / 3L), 0, max);
+        ensureFrameCache(center, true);
     }
 
     private String frameWindowLabel() {
-        return "附近帧 " + (frameIndex + 1) + " / " + frameTimesMs.size()
-                + "\n左半屏上一帧，右半屏下一帧";
+        return "帧 " + (frameIndex + 1) + " / " + frameCache.size();
     }
 
-    private void renderExactFrame(long ms, String label) {
-        pendingPreviewSeekMs = ms;
-        currentText.setText("当前位置：" + formatClock(ms));
-        File ffmpeg = getNativeExecutable("ffmpeg");
-        if (!ffmpeg.exists() || frameInputFile == null || !frameInputFile.exists()) {
-            showPreviewFrame(inputUri, ms, label);
-            return;
-        }
-        int request = ++frameRequestSerial;
+    private void renderCachedFrame(int index) {
+        if (index < 0 || index >= frameCache.size()) return;
+        CachedFrame frame = frameCache.get(index);
+        pendingPreviewSeekMs = frame.timeMs;
+        currentText.setText("当前位置：" + formatClock(frame.timeMs));
         previewImageView.setVisibility(View.VISIBLE);
-        previewOverlayText.setText(label);
-        previewOverlayText.setVisibility(View.VISIBLE);
-        if (isFrameFullscreenVisible()) {
-            fullscreenFrameOverlay.setText(label);
-            fullscreenFrameOverlay.setVisibility(View.VISIBLE);
+        previewImageView.setImageBitmap(frame.bitmap);
+        previewOverlayText.setVisibility(View.GONE);
+        fullscreenFrameImage.setImageBitmap(frame.bitmap);
+        hideFrameStatus();
+    }
+
+    private long getCurrentFrameTimeMs() {
+        if (frameIndex >= 0 && frameIndex < frameCache.size()) return frameCache.get(frameIndex).timeMs;
+        return pendingPreviewSeekMs;
+    }
+
+    private void maybeRebufferFrameCache(int direction) {
+        if (frameIndexing || frameCache.size() < 3) return;
+        int percent = Math.round(frameIndex * 100f / Math.max(1, frameCache.size() - 1));
+        long max = durationMs > 0 ? durationMs : Long.MAX_VALUE;
+        if (direction > 0 && percent >= FRAME_CACHE_REBUFFER_HIGH_PERCENT) {
+            long center = clamp(getCurrentFrameTimeMs() + frameStepMs * FRAME_CACHE_TARGET_FRAMES / 4, 0, max);
+            ensureFrameCache(center, false);
+        } else if (direction < 0 && percent <= FRAME_CACHE_REBUFFER_LOW_PERCENT) {
+            long center = clamp(getCurrentFrameTimeMs() - frameStepMs * FRAME_CACHE_TARGET_FRAMES / 4, 0, max);
+            ensureFrameCache(center, false);
         }
-        executor.execute(() -> {
-            File image = new File(frameWorkDir, "frame-" + request + ".jpg");
-            try {
-                List<String> cmd = new ArrayList<>();
-                cmd.add(ffmpeg.getAbsolutePath());
-                cmd.add("-hide_banner");
-                cmd.add("-y");
-                cmd.add("-i");
-                cmd.add(frameInputFile.getAbsolutePath());
-                cmd.add("-ss");
-                cmd.add(formatSeconds(ms));
-                cmd.add("-frames:v");
-                cmd.add("1");
-                cmd.add("-q:v");
-                cmd.add("2");
-                cmd.add(image.getAbsolutePath());
-                int code = runProcessQuiet(cmd);
-                if (code != 0 || !image.exists() || image.length() == 0) throw new IllegalStateException("FFmpeg 抽帧失败：" + code);
-                Bitmap bitmap = BitmapFactory.decodeFile(image.getAbsolutePath());
-                mainHandler.post(() -> {
-                    if (request == frameRequestSerial && bitmap != null) {
-                        previewImageView.setImageBitmap(bitmap);
-                        if (isFrameFullscreenVisible()) fullscreenFrameImage.setImageBitmap(bitmap);
-                        previewOverlayText.setVisibility(View.VISIBLE);
-                        if (isFrameFullscreenVisible()) fullscreenFrameOverlay.setVisibility(View.VISIBLE);
-                    }
-                });
-            } catch (Exception ex) {
-                postLog("精确抽帧失败，回退系统缩略图：" + ex.getMessage());
-                mainHandler.post(() -> {
-                    if (request == frameRequestSerial) showPreviewFrame(inputUri, ms, label);
-                });
+    }
+
+    private List<Long> buildFrameCacheTimes(long centerMs, long stepMs) {
+        long cleanStep = Math.max(1, stepMs);
+        int half = FRAME_CACHE_TARGET_FRAMES / 2;
+        long start = Math.max(0, centerMs - cleanStep * half);
+        long maxDuration = durationMs > 0 ? durationMs : Math.max(centerMs + cleanStep * half, 1);
+        List<Long> times = new ArrayList<>();
+        for (int i = 0; i < FRAME_CACHE_TARGET_FRAMES; i++) {
+            long t = start + cleanStep * i;
+            if (t > maxDuration) break;
+            if (times.isEmpty() || t > times.get(times.size() - 1)) times.add(t);
+        }
+        if (times.isEmpty()) times.add(clamp(centerMs, 0, maxDuration));
+        return times;
+    }
+
+    private List<CachedFrame> decodeFrameCache(Uri uri, List<Long> sortedTimes, int request, boolean renderFirst) throws Exception {
+        List<Integer> decodeOrder = buildDecodeOrder(sortedTimes, pendingPreviewSeekMs);
+        List<CachedFrame> decoded = new ArrayList<>();
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(this, uri);
+            boolean firstRendered = false;
+            for (Integer index : decodeOrder) {
+                long timeMs = sortedTimes.get(index);
+                Bitmap bitmap = retriever.getFrameAtTime(Math.max(0, timeMs) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
+                if (bitmap == null) continue;
+                CachedFrame cached = new CachedFrame(timeMs, scaleFrameForCache(bitmap));
+                decoded.add(cached);
+                if (renderFirst && !firstRendered) {
+                    firstRendered = true;
+                    mainHandler.post(() -> {
+                        if (frameMode && request == frameCacheRequestSerial) renderTransientFrame(cached);
+                    });
+                }
             }
+        } finally {
+            try { retriever.release(); } catch (Exception ignored) {}
+        }
+        decoded.sort((a, b) -> Long.compare(a.timeMs, b.timeMs));
+        return decoded;
+    }
+
+    private List<Integer> buildDecodeOrder(List<Long> sortedTimes, long centerMs) {
+        int nearest = 0;
+        long best = Long.MAX_VALUE;
+        for (int i = 0; i < sortedTimes.size(); i++) {
+            long distance = Math.abs(sortedTimes.get(i) - centerMs);
+            if (distance < best) {
+                nearest = i;
+                best = distance;
+            }
+        }
+        List<Integer> order = new ArrayList<>();
+        order.add(nearest);
+        for (int radius = 1; order.size() < sortedTimes.size(); radius++) {
+            int right = nearest + radius;
+            int left = nearest - radius;
+            if (right < sortedTimes.size()) order.add(right);
+            if (left >= 0) order.add(left);
+        }
+        return order;
+    }
+
+    private void renderTransientFrame(CachedFrame frame) {
+        pendingPreviewSeekMs = frame.timeMs;
+        currentText.setText("当前位置：" + formatClock(frame.timeMs));
+        previewImageView.setVisibility(View.VISIBLE);
+        previewImageView.setImageBitmap(frame.bitmap);
+        fullscreenFrameImage.setImageBitmap(frame.bitmap);
+        hideFrameStatus();
+    }
+
+    private Bitmap scaleFrameForCache(Bitmap bitmap) {
+        int max = Math.max(bitmap.getWidth(), bitmap.getHeight());
+        if (max <= FRAME_CACHE_MAX_BITMAP_EDGE) return bitmap;
+        float ratio = FRAME_CACHE_MAX_BITMAP_EDGE / (float) max;
+        int width = Math.max(1, Math.round(bitmap.getWidth() * ratio));
+        int height = Math.max(1, Math.round(bitmap.getHeight() * ratio));
+        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, width, height, true);
+        if (scaled != bitmap) bitmap.recycle();
+        return scaled;
+    }
+
+    private void renderSoftwareFallbackFrame(long ms, int request) {
+        executor.execute(() -> {
+            Bitmap bitmap = null;
+            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+            try {
+                retriever.setDataSource(this, inputUri);
+                Bitmap frame = retriever.getFrameAtTime(Math.max(0, ms) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
+                if (frame != null) bitmap = scaleFrameForCache(frame);
+            } catch (Exception ex) {
+                postLog("软件抽帧失败：" + ex.getMessage());
+            } finally {
+                try { retriever.release(); } catch (Exception ignored) {}
+            }
+            Bitmap finalBitmap = bitmap;
+            mainHandler.post(() -> {
+                if (!frameMode || request != frameCacheRequestSerial) {
+                    if (finalBitmap != null) finalBitmap.recycle();
+                    return;
+                }
+                frameIndexing = false;
+                if (finalBitmap == null) {
+                    exitFrameMode(false);
+                    showPreviewOverlay("逐帧模式无法解码当前视频");
+                    return;
+                }
+                List<CachedFrame> oldFrames = new ArrayList<>(frameCache);
+                frameCache.clear();
+                frameCache.add(new CachedFrame(ms, finalBitmap));
+                frameCacheStartMs = ms;
+                frameCacheEndMs = ms;
+                frameIndex = 0;
+                renderCachedFrame(0);
+                recycleFrames(oldFrames);
+                setStatus("未检测到可用硬件解码缓存，已使用软件抽帧");
+            });
         });
+    }
+
+    private DecoderInfo detectDecoderInfo(Uri uri) {
+        DecoderInfo info = new DecoderInfo();
+        MediaExtractor extractor = new MediaExtractor();
+        try {
+            extractor.setDataSource(this, uri, null);
+            for (int i = 0; i < extractor.getTrackCount(); i++) {
+                MediaFormat format = extractor.getTrackFormat(i);
+                String mime = format.containsKey(MediaFormat.KEY_MIME) ? format.getString(MediaFormat.KEY_MIME) : "";
+                if (mime == null || !mime.startsWith("video/")) continue;
+                info.mime = mime;
+                if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                    int fps = format.getInteger(MediaFormat.KEY_FRAME_RATE);
+                    if (fps > 0 && fps <= 240) info.frameStepMs = Math.max(1, Math.round(1000f / fps));
+                }
+                MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+                String decoderName = codecList.findDecoderForFormat(format);
+                info.name = decoderName == null ? "" : decoderName;
+                info.hasDecoder = decoderName != null;
+                info.hardware = decoderName != null && isHardwareDecoder(codecList, decoderName);
+                break;
+            }
+        } catch (Exception ex) {
+            postLog("检测系统解码器失败：" + ex.getMessage());
+        } finally {
+            try { extractor.release(); } catch (Exception ignored) {}
+        }
+        if (!info.hasDecoder) {
+            postLog("未检测到系统视频解码器，逐帧会尝试软件回退");
+        } else if (!info.hardware) {
+            postLog("系统解码器不是硬件实现：" + info.name + "，逐帧会使用软件路径");
+        }
+        return info;
+    }
+
+    private boolean isHardwareDecoder(MediaCodecList codecList, String decoderName) {
+        for (MediaCodecInfo codecInfo : codecList.getCodecInfos()) {
+            if (!codecInfo.getName().equals(decoderName)) continue;
+            if (Build.VERSION.SDK_INT >= 29) return codecInfo.isHardwareAccelerated();
+            String lower = decoderName.toLowerCase(Locale.US);
+            return !(lower.startsWith("omx.google.")
+                    || lower.startsWith("c2.android.")
+                    || lower.contains(".sw.")
+                    || lower.contains("software"));
+        }
+        return false;
+    }
+
+    private String frameDecoderStatusText(DecoderInfo decoder) {
+        if (decoder == null || !decoder.hasDecoder) return "未检测到硬件解码，使用系统软件解码";
+        return decoder.hardware ? "硬件解码缓存：" + decoder.name : "软件解码缓存：" + decoder.name;
+    }
+
+    private void setFrameStatus(String text) {
+        if (!isFrameFullscreenVisible()) return;
+        fullscreenFrameOverlay.setText(text);
+        fullscreenFrameOverlay.setVisibility(View.VISIBLE);
+    }
+
+    private void hideFrameStatus() {
+        if (fullscreenFrameOverlay != null) fullscreenFrameOverlay.setVisibility(View.GONE);
+    }
+
+    private void clearFrameCache(boolean clearImages) {
+        if (clearImages) {
+            previewImageView.setImageBitmap(null);
+            fullscreenFrameImage.setImageBitmap(null);
+        }
+        List<CachedFrame> oldFrames = new ArrayList<>(frameCache);
+        frameCache.clear();
+        recycleFrames(oldFrames);
+    }
+
+    private void recycleFrames(List<CachedFrame> frames) {
+        for (CachedFrame frame : frames) {
+            if (frame.bitmap != null && !frame.bitmap.isRecycled()) frame.bitmap.recycle();
+        }
     }
 
     private void applyManualTimes() {
@@ -1418,7 +1583,7 @@ public class MainActivity extends Activity {
 
     private void setStartFromCurrent() {
         if (inputUri == null) return;
-        long pos = frameMode && !frameTimesMs.isEmpty() ? frameTimesMs.get(frameIndex) : getPreviewPosition();
+        long pos = frameMode && !frameCache.isEmpty() ? getCurrentFrameTimeMs() : getPreviewPosition();
         long maxStart = Math.max(0, endMs - minGapMs());
         startMs = clamp(pos, 0, maxStart);
         if (endMs <= startMs) endMs = Math.min(durationMs, startMs + minGapMs());
@@ -1428,7 +1593,7 @@ public class MainActivity extends Activity {
 
     private void setEndFromCurrent() {
         if (inputUri == null) return;
-        long pos = frameMode && !frameTimesMs.isEmpty() ? frameTimesMs.get(frameIndex) : getPreviewPosition();
+        long pos = frameMode && !frameCache.isEmpty() ? getCurrentFrameTimeMs() : getPreviewPosition();
         long minEnd = Math.min(durationMs, startMs + minGapMs());
         endMs = clamp(pos, minEnd, durationMs > 0 ? durationMs : pos);
         syncRangeViews(true);
