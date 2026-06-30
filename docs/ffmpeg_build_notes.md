@@ -26,7 +26,7 @@ prebuilt/ffmpeg/arm64-v8a/libffmpeg.so
 
 ## 当前 FFmpeg 配置目标
 
-目标同时支持无重编码裁剪、逐帧抽帧和编码导出：
+目标同时支持无重编码裁剪、逐帧预览和编码导出：
 
 ```bash
 -map 0 -c copy
@@ -36,14 +36,14 @@ prebuilt/ffmpeg/arm64-v8a/libffmpeg.so
 
 ```bash
 ffmpeg -ss 10.000 -i input.mp4 -t 5.000 \
-  -c:v libx264 -crf 23 -preset medium -c:a aac output.mp4
+  -c:v libx264 -b:v 4000k -preset medium -c:a aac output.mp4
 ```
 
 当前配置倾向于功能完整：
 
 - 保留 FFmpeg CLI。
 - 保留 demuxers / muxers / parsers / bitstream filters / filters。
-- 启用 decoder / encoder，用于逐帧抽帧和转码。
+- 启用 decoder / encoder，用于格式兼容、能力探测和转码。
 - 启用 `--enable-gpl` 与 `--enable-libx264`。
 - 启用 Android MediaCodec/JNI，用于可用设备上的硬件编码尝试。
 - 禁用 network。
@@ -103,4 +103,4 @@ Java 侧再用同样方式执行。
 
 ### 精确模式
 
-当前脚本已开启逐帧抽帧所需的解码能力。App 会优先用 FFprobe 建立帧时间索引，再用 FFmpeg 抽取指定帧到缓存；如果设备中的 APK 仍内置旧轻量 FFmpeg，逐帧和编码功能会被 UI 禁用或在日志中提示失败。
+当前逐帧预览优先使用 Android 系统解码器，并在逐帧界面持续持有解码对象、缓存当前位置附近的原始分辨率帧。FFmpeg/FFprobe 仍用于裁剪、编码导出和能力探测。

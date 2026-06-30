@@ -25,6 +25,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -50,10 +51,7 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -72,7 +70,7 @@ public class MainActivity extends Activity {
     private static final int FRAME_CACHE_TARGET_FRAMES = 31;
     private static final int FRAME_CACHE_REBUFFER_LOW_PERCENT = 20;
     private static final int FRAME_CACHE_REBUFFER_HIGH_PERCENT = 80;
-    private static final int FRAME_CACHE_MAX_BITMAP_EDGE = 960;
+    private static final long FRAME_CACHE_MAX_BYTES = 160L * 1024L * 1024L;
     private static final long FRAME_CACHE_FALLBACK_STEP_MS = 40;
 
     private static final String PREFS_NAME = "output_picker_state";
@@ -168,6 +166,21 @@ public class MainActivity extends Activity {
         boolean hasDecoder;
         boolean hardware;
         long frameStepMs = FRAME_CACHE_FALLBACK_STEP_MS;
+    }
+
+    private static class FdPath implements AutoCloseable {
+        final ParcelFileDescriptor descriptor;
+        final String path;
+
+        FdPath(ParcelFileDescriptor descriptor) {
+            this.descriptor = descriptor;
+            this.path = "/proc/" + android.os.Process.myPid() + "/fd/" + descriptor.getFd();
+        }
+
+        @Override
+        public void close() throws Exception {
+            descriptor.close();
+        }
     }
 
     private View homeScreen;
@@ -270,16 +283,19 @@ public class MainActivity extends Activity {
     private float touchDownY;
     private boolean touchMoved;
     private boolean previewPanning;
+    private View activeTouchView;
 
     private boolean frameMode;
     private boolean frameIndexing;
     private final List<CachedFrame> frameCache = new ArrayList<>();
     private int frameIndex;
     private int frameCacheRequestSerial;
+    private int previewFrameRequestSerial;
     private long frameCacheStartMs = -1;
     private long frameCacheEndMs = -1;
     private long frameStepMs = FRAME_CACHE_FALLBACK_STEP_MS;
     private DecoderInfo frameDecoderInfo;
+    private MediaMetadataRetriever frameRetriever;
 
     private boolean detailLogVisible;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -327,10 +343,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
+        frameMode = false;
+        frameCacheRequestSerial++;
+        previewFrameRequestSerial++;
         releasePreviewPlayer();
         releasePreviewSurface();
-        executor.shutdownNow();
+        releaseFrameRetrieverAsync();
         clearFrameCache(true);
+        executor.shutdown();
         super.onDestroy();
     }
 
@@ -528,17 +548,34 @@ public class MainActivity extends Activity {
     private void setupPreviewTouch() {
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
+            public boolean onScaleBegin(ScaleGestureDetector detector) {
+                previewPanning = false;
+                return true;
+            }
+
+            @Override
             public boolean onScale(ScaleGestureDetector detector) {
-                previewScale = clampFloat(previewScale * detector.getScaleFactor(), 1f, 4f);
+                float oldScale = previewScale;
+                previewScale = clampFloat(previewScale * detector.getScaleFactor(), 1f, 6f);
+                if (activeTouchView != null && oldScale > 0f && previewScale != oldScale) {
+                    float focusX = detector.getFocusX() - activeTouchView.getWidth() / 2f;
+                    float focusY = detector.getFocusY() - activeTouchView.getHeight() / 2f;
+                    float ratio = previewScale / oldScale;
+                    previewTranslationX = focusX - (focusX - previewTranslationX) * ratio;
+                    previewTranslationY = focusY - (focusY - previewTranslationY) * ratio;
+                    clampPreviewTranslation(activeTouchView);
+                }
                 applyPreviewTransform();
                 return true;
             }
         });
 
         View.OnTouchListener listener = (view, event) -> {
+            activeTouchView = view;
             scaleGestureDetector.onTouchEvent(event);
             if (event.getPointerCount() > 1) {
                 previewPanning = false;
+                touchMoved = true;
                 return true;
             }
             switch (event.getActionMasked()) {
@@ -559,6 +596,7 @@ public class MainActivity extends Activity {
                         previewTranslationY += event.getY() - lastTouchY;
                         lastTouchX = event.getX();
                         lastTouchY = event.getY();
+                        clampPreviewTranslation(view);
                         applyPreviewTransform();
                     }
                     return true;
@@ -566,7 +604,7 @@ public class MainActivity extends Activity {
                     if (frameMode && !touchMoved
                             && Math.abs(event.getX() - touchDownX) < dp(10)
                             && Math.abs(event.getY() - touchDownY) < dp(10)) {
-                        stepFrame(event.getX() < view.getWidth() / 2f ? -1 : 1);
+                        stepFrame(isTouchOnLeftScreenHalf(view, event) ? -1 : 1);
                     }
                     previewPanning = false;
                     return true;
@@ -578,6 +616,18 @@ public class MainActivity extends Activity {
         previewImageView.setOnTouchListener(listener);
         fullscreenFrameImage.setOnTouchListener(listener);
         fullscreenFrameOverlay.setOnTouchListener(listener);
+    }
+
+    private boolean isTouchOnLeftScreenHalf(View touchedView, MotionEvent event) {
+        if (isFrameFullscreenVisible()) {
+            int[] touchedLocation = new int[2];
+            int[] overlayLocation = new int[2];
+            touchedView.getLocationOnScreen(touchedLocation);
+            frameFullscreenOverlay.getLocationOnScreen(overlayLocation);
+            float screenXInOverlay = touchedLocation[0] + event.getX() - overlayLocation[0];
+            return screenXInOverlay < frameFullscreenOverlay.getWidth() / 2f;
+        }
+        return event.getX() < touchedView.getWidth() / 2f;
     }
 
     private void saveStateToBundle(Bundle out) {
@@ -1068,6 +1118,7 @@ public class MainActivity extends Activity {
     }
 
     private void showPreviewFrame(Uri uri, long ms, String text) {
+        int request = ++previewFrameRequestSerial;
         String label = text == null ? "预览帧" : text;
         previewOverlayText.setText(label);
         previewImageView.setVisibility(View.VISIBLE);
@@ -1091,6 +1142,10 @@ public class MainActivity extends Activity {
             }
             Bitmap finalFrame = frame;
             mainHandler.post(() -> {
+                if (request != previewFrameRequestSerial || !uri.equals(currentPreviewUri)) {
+                    if (finalFrame != null && !finalFrame.isRecycled()) finalFrame.recycle();
+                    return;
+                }
                 if (finalFrame != null) {
                     previewImageView.setImageBitmap(finalFrame);
                     if (isFrameFullscreenVisible()) fullscreenFrameImage.setImageBitmap(finalFrame);
@@ -1121,6 +1176,18 @@ public class MainActivity extends Activity {
         previewTranslationX = 0f;
         previewTranslationY = 0f;
         applyPreviewTransform();
+    }
+
+    private void clampPreviewTranslation(View view) {
+        if (previewScale <= 1f || view == null) {
+            previewTranslationX = 0f;
+            previewTranslationY = 0f;
+            return;
+        }
+        float maxX = (previewScale - 1f) * view.getWidth() / 2f;
+        float maxY = (previewScale - 1f) * view.getHeight() / 2f;
+        previewTranslationX = clampFloat(previewTranslationX, -maxX, maxX);
+        previewTranslationY = clampFloat(previewTranslationY, -maxY, maxY);
     }
 
     private void applyPreviewTransform() {
@@ -1181,6 +1248,7 @@ public class MainActivity extends Activity {
         frameIndexing = false;
         updateFrameModeButton();
         hideFrameFullscreenOverlay();
+        releaseFrameRetrieverAsync();
         if (announce) showPreviewOverlay("已退出逐帧模式");
     }
 
@@ -1219,8 +1287,37 @@ public class MainActivity extends Activity {
         frameCacheStartMs = -1;
         frameCacheEndMs = -1;
         frameDecoderInfo = null;
+        releaseFrameRetrieverAsync();
         updateFrameModeButton();
         hideFrameFullscreenOverlay();
+    }
+
+    private boolean ensureFrameRetrieverOnWorker() {
+        if (frameRetriever != null) return true;
+        try {
+            frameRetriever = new MediaMetadataRetriever();
+            frameRetriever.setDataSource(this, inputUri);
+            return true;
+        } catch (Exception ex) {
+            postLog("逐帧解码器初始化失败：" + ex.getMessage());
+            releaseFrameRetriever();
+            return false;
+        }
+    }
+
+    private void releaseFrameRetriever() {
+        if (frameRetriever != null) {
+            try { frameRetriever.release(); } catch (Exception ignored) {}
+            frameRetriever = null;
+        }
+    }
+
+    private void releaseFrameRetrieverAsync() {
+        try {
+            executor.execute(this::releaseFrameRetriever);
+        } catch (RuntimeException ignored) {
+            // onDestroy queues the release before shutting the executor down.
+        }
     }
 
     private void ensureFrameIndex() {
@@ -1238,9 +1335,11 @@ public class MainActivity extends Activity {
         if (frameIndexing) return;
         frameIndexing = true;
         int request = ++frameCacheRequestSerial;
+        if (renderNearest) clearFrameCache(true);
         setFrameStatus("正在缓存附近帧...");
         executor.execute(() -> {
             try {
+                if (!ensureFrameRetrieverOnWorker()) throw new IllegalStateException("无法初始化系统逐帧解码器");
                 DecoderInfo decoder = frameDecoderInfo != null ? frameDecoderInfo : detectDecoderInfo(inputUri);
                 List<Long> times = buildFrameCacheTimes(centerMs, decoder.frameStepMs);
                 List<CachedFrame> decoded = decodeFrameCache(inputUri, times, request, renderNearest);
@@ -1253,7 +1352,7 @@ public class MainActivity extends Activity {
                         recycleFrames(decoded);
                         return;
                     }
-                    List<CachedFrame> oldFrames = new ArrayList<>(frameCache);
+                    List<CachedFrame> oldFrames = renderNearest ? new ArrayList<>() : new ArrayList<>(frameCache);
                     frameCache.clear();
                     frameCache.addAll(decoded);
                     frameCacheStartMs = cacheStart;
@@ -1265,7 +1364,7 @@ public class MainActivity extends Activity {
                     setStatus(frameDecoderStatusText(decoder) + "，已缓存 " + frameCache.size() + " 帧");
                     renderCachedFrame(frameIndex);
                     hideFrameStatus();
-                    recycleFrames(oldFrames);
+                    if (!renderNearest) recycleFrames(oldFrames);
                 });
             } catch (Exception ex) {
                 mainHandler.post(() -> {
@@ -1365,28 +1464,53 @@ public class MainActivity extends Activity {
     private List<CachedFrame> decodeFrameCache(Uri uri, List<Long> sortedTimes, int request, boolean renderFirst) throws Exception {
         List<Integer> decodeOrder = buildDecodeOrder(sortedTimes, pendingPreviewSeekMs);
         List<CachedFrame> decoded = new ArrayList<>();
-        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-        try {
-            retriever.setDataSource(this, uri);
-            boolean firstRendered = false;
-            for (Integer index : decodeOrder) {
-                long timeMs = sortedTimes.get(index);
-                Bitmap bitmap = retriever.getFrameAtTime(Math.max(0, timeMs) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
-                if (bitmap == null) continue;
-                CachedFrame cached = new CachedFrame(timeMs, scaleFrameForCache(bitmap));
-                decoded.add(cached);
-                if (renderFirst && !firstRendered) {
-                    firstRendered = true;
-                    mainHandler.post(() -> {
-                        if (frameMode && request == frameCacheRequestSerial) renderTransientFrame(cached);
-                    });
-                }
+        MediaMetadataRetriever retriever = frameRetriever;
+        if (retriever == null) throw new IllegalStateException("逐帧解码器未初始化");
+        boolean firstRendered = false;
+        long decodedBytes = 0;
+        for (Integer index : decodeOrder) {
+            long timeMs = sortedTimes.get(index);
+            Bitmap bitmap = retriever.getFrameAtTime(Math.max(0, timeMs) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
+            if (bitmap == null) continue;
+            long bitmapBytes = Math.max(0, bitmap.getByteCount());
+            if (!decoded.isEmpty() && decodedBytes + bitmapBytes > FRAME_CACHE_MAX_BYTES) {
+                bitmap.recycle();
+                break;
             }
-        } finally {
-            try { retriever.release(); } catch (Exception ignored) {}
+            CachedFrame cached = new CachedFrame(timeMs, bitmap);
+            decoded.add(cached);
+            decodedBytes += bitmapBytes;
+            if (renderFirst) {
+                boolean shouldRender = !firstRendered;
+                firstRendered = true;
+                mainHandler.post(() -> publishDecodedFrame(cached, request, shouldRender));
+            }
         }
         decoded.sort((a, b) -> Long.compare(a.timeMs, b.timeMs));
         return decoded;
+    }
+
+    private void publishDecodedFrame(CachedFrame frame, int request, boolean render) {
+        if (!frameMode || request != frameCacheRequestSerial) return;
+        insertFrameSorted(frame);
+        frameCacheStartMs = frameCache.get(0).timeMs;
+        frameCacheEndMs = frameCache.get(frameCache.size() - 1).timeMs;
+        if (render) {
+            frameIndex = nearestFrameIndex(frame.timeMs);
+            renderCachedFrame(frameIndex);
+        }
+    }
+
+    private void insertFrameSorted(CachedFrame frame) {
+        for (int i = 0; i < frameCache.size(); i++) {
+            long time = frameCache.get(i).timeMs;
+            if (time == frame.timeMs) return;
+            if (time > frame.timeMs) {
+                frameCache.add(i, frame);
+                return;
+            }
+        }
+        frameCache.add(frame);
     }
 
     private List<Integer> buildDecodeOrder(List<Long> sortedTimes, long centerMs) {
@@ -1419,29 +1543,15 @@ public class MainActivity extends Activity {
         hideFrameStatus();
     }
 
-    private Bitmap scaleFrameForCache(Bitmap bitmap) {
-        int max = Math.max(bitmap.getWidth(), bitmap.getHeight());
-        if (max <= FRAME_CACHE_MAX_BITMAP_EDGE) return bitmap;
-        float ratio = FRAME_CACHE_MAX_BITMAP_EDGE / (float) max;
-        int width = Math.max(1, Math.round(bitmap.getWidth() * ratio));
-        int height = Math.max(1, Math.round(bitmap.getHeight() * ratio));
-        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, width, height, true);
-        if (scaled != bitmap) bitmap.recycle();
-        return scaled;
-    }
-
     private void renderSoftwareFallbackFrame(long ms, int request) {
         executor.execute(() -> {
             Bitmap bitmap = null;
-            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
             try {
-                retriever.setDataSource(this, inputUri);
-                Bitmap frame = retriever.getFrameAtTime(Math.max(0, ms) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
-                if (frame != null) bitmap = scaleFrameForCache(frame);
+                MediaMetadataRetriever retriever = frameRetriever;
+                if (retriever == null) throw new IllegalStateException("逐帧解码器未初始化");
+                bitmap = retriever.getFrameAtTime(Math.max(0, ms) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
             } catch (Exception ex) {
                 postLog("软件抽帧失败：" + ex.getMessage());
-            } finally {
-                try { retriever.release(); } catch (Exception ignored) {}
             }
             Bitmap finalBitmap = bitmap;
             mainHandler.post(() -> {
@@ -1889,7 +1999,7 @@ public class MainActivity extends Activity {
         }
         hardwareBackendRadio.setEnabled(!capabilities.checked || capabilities.hasHardwareEncoder());
         ffmpegBackendRadio.setEnabled(!capabilities.checked || capabilities.hasFfmpegEncoder());
-        if (wantsEncode && !available) copyModeRadio.setChecked(true);
+        if (wantsEncode && capabilities.checked && !available) copyModeRadio.setChecked(true);
         chooseOutputButton.setEnabled(inputUri != null);
         startExportButton.setEnabled(inputUri != null);
     }
@@ -2004,56 +2114,46 @@ public class MainActivity extends Activity {
         ExportSettings finalSettings = copyExportSettings(exportSettings);
 
         executor.execute(() -> {
-            File workDir = new File(getCacheDir(), "export-" + System.currentTimeMillis());
-            if (!workDir.mkdirs() && !workDir.exists()) {
-                failOnUi("无法创建缓存目录");
-                return;
-            }
-            File tempInput = new File(workDir, sanitizeFileName(inputName));
-            File tempOutput = new File(workDir, makeOutputName(inputName, finalSettings.mode == ExportMode.ENCODE ? finalSettings.container : null));
-            File fallbackOutput = new File(workDir, "video_only_" + tempOutput.getName());
-            try {
-                postLog("复制输入文件到 App 缓存...");
-                copyUriToFile(inputUri, tempInput);
-                postLog("输入缓存路径：" + tempInput.getAbsolutePath());
+            try (FdPath inputPath = openFdPath(inputUri, "r")) {
+                String outputName = getDisplayName(outputUri, makeOutputName(inputName, finalSettings.mode == ExportMode.ENCODE ? finalSettings.container : null));
+                postLog("使用文件描述符直读输入：" + inputPath.path);
                 postLog("裁剪范围：" + formatClock(finalStartMs) + " → " + formatClock(finalStartMs + finalDurationMs));
 
-                StreamSelection selection = ffprobe.exists() ? probeStreams(ffprobe, tempInput) : StreamSelection.videoOnlyFallback();
+                StreamSelection selection = ffprobe.exists() ? probeStreams(ffprobe, inputPath.path) : StreamSelection.videoOnlyFallback();
                 for (String msg : selection.messages) postLog(msg);
 
-                List<String> cmd = finalSettings.mode == ExportMode.ENCODE
-                        ? buildEncodeCutCommand(ffmpeg, tempInput, tempOutput, finalStartMs, finalDurationMs, selection.mapIndexes, finalSettings)
-                        : buildCopyCutCommand(ffmpeg, tempInput, tempOutput, finalStartMs, finalDurationMs, selection.mapIndexes);
-                postLog("执行命令：\n" + joinCommand(cmd));
-                int code = runProcess(cmd);
-                File result = tempOutput;
-                if (code != 0 || !tempOutput.exists() || tempOutput.length() == 0) {
+                int code;
+                try (FdPath outputPath = openOutputFdPath(outputUri)) {
+                    List<String> cmd = finalSettings.mode == ExportMode.ENCODE
+                            ? buildEncodeCutCommand(ffmpeg, inputPath.path, outputPath.path, outputName, finalStartMs, finalDurationMs, selection.mapIndexes, finalSettings)
+                            : buildCopyCutCommand(ffmpeg, inputPath.path, outputPath.path, outputName, finalStartMs, finalDurationMs, selection.mapIndexes);
+                    postLog("执行命令：\n" + joinCommand(cmd));
+                    code = runProcess(cmd);
+                }
+                if (code != 0) {
                     if (finalSettings.mode == ExportMode.ENCODE) {
                         failOnUi("FFmpeg 编码导出失败，退出码：" + code);
                         return;
                     }
                     postLog("第一次输出失败，尝试只保留主视频轨...");
-                    safeDelete(tempOutput);
                     List<Integer> videoOnly = new ArrayList<>();
                     videoOnly.add(selection.videoIndex >= 0 ? selection.videoIndex : -1);
-                    List<String> fallbackCmd = buildCopyCutCommand(ffmpeg, tempInput, fallbackOutput, finalStartMs, finalDurationMs, videoOnly);
-                    postLog("兜底命令：\n" + joinCommand(fallbackCmd));
-                    int fallbackCode = runProcess(fallbackCmd);
-                    if (fallbackCode != 0 || !fallbackOutput.exists() || fallbackOutput.length() == 0) {
+                    int fallbackCode;
+                    try (FdPath fallbackOutputPath = openOutputFdPath(outputUri)) {
+                        List<String> fallbackCmd = buildCopyCutCommand(ffmpeg, inputPath.path, fallbackOutputPath.path, outputName, finalStartMs, finalDurationMs, videoOnly);
+                        postLog("兜底命令：\n" + joinCommand(fallbackCmd));
+                        fallbackCode = runProcess(fallbackCmd);
+                    }
+                    if (fallbackCode != 0) {
                         failOnUi("FFmpeg 执行失败，退出码：" + code + " / 兜底：" + fallbackCode);
                         return;
                     }
-                    result = fallbackOutput;
                     postLog("兜底成功：已输出视频轨。");
                 }
-                postLog("输出缓存文件大小：" + result.length() + " bytes");
-                postLog("写入用户选择的输出位置...");
-                copyFileToUri(result, outputUri);
+                postLog("输出文件大小：" + readUriSize(outputUri) + " bytes");
                 successOnUi(finalSettings.mode == ExportMode.ENCODE ? "完成：已编码导出并保存" : "完成：已无重编码裁剪并保存");
             } catch (Exception ex) {
                 failOnUi(ex.getClass().getSimpleName() + ": " + ex.getMessage());
-            } finally {
-                deleteRecursively(workDir);
             }
         });
     }
@@ -2096,7 +2196,7 @@ public class MainActivity extends Activity {
         return copy;
     }
 
-    private StreamSelection probeStreams(File ffprobe, File input) throws Exception {
+    private StreamSelection probeStreams(File ffprobe, String inputPath) throws Exception {
         List<String> cmd = new ArrayList<>();
         cmd.add(ffprobe.getAbsolutePath());
         cmd.add("-v");
@@ -2105,7 +2205,7 @@ public class MainActivity extends Activity {
         cmd.add("stream=index,codec_type,codec_name,sample_rate,channels");
         cmd.add("-of");
         cmd.add("json");
-        cmd.add(input.getAbsolutePath());
+        cmd.add(inputPath);
         String json = runProcessCapture(cmd);
 
         StreamSelection selection = new StreamSelection();
@@ -2148,8 +2248,8 @@ public class MainActivity extends Activity {
         return selection;
     }
 
-    private List<String> buildCopyCutCommand(File ffmpeg, File input, File output, long startMs, long durationMs, List<Integer> mapIndexes) {
-        List<String> cmd = commonCutPrefix(ffmpeg, input, startMs, durationMs);
+    private List<String> buildCopyCutCommand(File ffmpeg, String inputPath, String outputPath, String outputName, long startMs, long durationMs, List<Integer> mapIndexes) {
+        List<String> cmd = commonCutPrefix(ffmpeg, inputPath, startMs, durationMs);
         addMaps(cmd, mapIndexes);
         cmd.add("-c");
         cmd.add("copy");
@@ -2157,13 +2257,14 @@ public class MainActivity extends Activity {
         cmd.add("0");
         cmd.add("-avoid_negative_ts");
         cmd.add("make_zero");
-        addMovFlagsIfNeeded(cmd, output);
-        cmd.add(output.getAbsolutePath());
+        addMovFlagsIfNeeded(cmd, outputName);
+        addOutputFormat(cmd, outputName);
+        cmd.add(outputPath);
         return cmd;
     }
 
-    private List<String> buildEncodeCutCommand(File ffmpeg, File input, File output, long startMs, long durationMs, List<Integer> mapIndexes, ExportSettings settings) {
-        List<String> cmd = commonCutPrefix(ffmpeg, input, startMs, durationMs);
+    private List<String> buildEncodeCutCommand(File ffmpeg, String inputPath, String outputPath, String outputName, long startMs, long durationMs, List<Integer> mapIndexes, ExportSettings settings) {
+        List<String> cmd = commonCutPrefix(ffmpeg, inputPath, startMs, durationMs);
         addMaps(cmd, mapIndexes);
         cmd.add("-c:v");
         cmd.add(nonEmpty(settings.videoCodec, settings.backend == EncoderBackend.HARDWARE ? "h264_mediacodec" : "libx264"));
@@ -2196,13 +2297,14 @@ public class MainActivity extends Activity {
         }
         cmd.add("-map_metadata");
         cmd.add("0");
-        addMovFlagsIfNeeded(cmd, output);
+        addMovFlagsIfNeeded(cmd, outputName);
         cmd.addAll(splitArgs(settings.extraArgs));
-        cmd.add(output.getAbsolutePath());
+        addOutputFormat(cmd, outputName);
+        cmd.add(outputPath);
         return cmd;
     }
 
-    private List<String> commonCutPrefix(File ffmpeg, File input, long startMs, long durationMs) {
+    private List<String> commonCutPrefix(File ffmpeg, String inputPath, long startMs, long durationMs) {
         List<String> cmd = new ArrayList<>();
         cmd.add(ffmpeg.getAbsolutePath());
         cmd.add("-hide_banner");
@@ -2210,7 +2312,7 @@ public class MainActivity extends Activity {
         cmd.add("-ss");
         cmd.add(formatSeconds(startMs));
         cmd.add("-i");
-        cmd.add(input.getAbsolutePath());
+        cmd.add(inputPath);
         cmd.add("-t");
         cmd.add(formatSeconds(durationMs));
         cmd.add("-ignore_unknown");
@@ -2236,12 +2338,30 @@ public class MainActivity extends Activity {
         return "scale=" + w + ":" + h;
     }
 
-    private void addMovFlagsIfNeeded(List<String> cmd, File output) {
-        String lower = output.getName().toLowerCase(Locale.ROOT);
+    private void addMovFlagsIfNeeded(List<String> cmd, String outputName) {
+        String lower = outputName.toLowerCase(Locale.ROOT);
         if (lower.endsWith(".mp4") || lower.endsWith(".m4v") || lower.endsWith(".mov")) {
             cmd.add("-movflags");
             cmd.add("+faststart");
         }
+    }
+
+    private void addOutputFormat(List<String> cmd, String outputName) {
+        String muxer = muxerForOutputName(outputName);
+        if (!muxer.isEmpty()) {
+            cmd.add("-f");
+            cmd.add(muxer);
+        }
+    }
+
+    private String muxerForOutputName(String outputName) {
+        String lower = outputName == null ? "" : outputName.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".mp4") || lower.endsWith(".m4v")) return "mp4";
+        if (lower.endsWith(".mov")) return "mov";
+        if (lower.endsWith(".mkv")) return "matroska";
+        if (lower.endsWith(".webm")) return "webm";
+        if (lower.endsWith(".ts")) return "mpegts";
+        return "mp4";
     }
 
     private int runProcess(List<String> cmd) throws Exception {
@@ -2285,31 +2405,18 @@ public class MainActivity extends Activity {
         return new File(getApplicationInfo().nativeLibraryDir, "lib" + name + ".so");
     }
 
-    private void copyUriToFile(Uri uri, File target) throws Exception {
-        try (InputStream in = getContentResolver().openInputStream(uri);
-             OutputStream out = new FileOutputStream(target)) {
-            if (in == null) throw new IllegalStateException("无法打开输入文件");
-            byte[] buffer = new byte[1024 * 1024];
-            int read;
-            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
-        }
+    private FdPath openFdPath(Uri uri, String mode) throws Exception {
+        ParcelFileDescriptor descriptor = getContentResolver().openFileDescriptor(uri, mode);
+        if (descriptor == null) throw new IllegalStateException("无法打开文件描述符：" + mode);
+        return new FdPath(descriptor);
     }
 
-    private void copyFileToUri(File source, Uri uri) throws Exception {
-        OutputStream rawOut;
+    private FdPath openOutputFdPath(Uri uri) throws Exception {
         try {
-            rawOut = getContentResolver().openOutputStream(uri, "rwt");
+            return openFdPath(uri, "rwt");
         } catch (Exception ex) {
-            postLog("rwt 截断写入不可用，回退到 w 模式：" + ex.getMessage());
-            rawOut = getContentResolver().openOutputStream(uri, "w");
-        }
-        try (InputStream in = new java.io.FileInputStream(source);
-             OutputStream out = rawOut) {
-            if (out == null) throw new IllegalStateException("无法打开输出文件");
-            byte[] buffer = new byte[1024 * 1024];
-            int read;
-            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
-            out.flush();
+            postLog("rwt 输出不可用，回退到 w 模式：" + ex.getMessage());
+            return openFdPath(uri, "w");
         }
     }
 
@@ -2553,7 +2660,7 @@ public class MainActivity extends Activity {
                 "版本：" + version + "\n\n" +
                 "本 App 用于 Android 本地视频时间裁剪。无重编码模式使用 FFmpeg stream copy；编码导出模式依赖打包进 APK 的 FFmpeg 编码能力。\n\n" +
                 "预览与逐帧\n" +
-                "普通预览使用系统 MediaPlayer。逐帧模式会用 FFprobe 建立帧时间索引，并尽量用 FFmpeg 解码抽帧；如果当前 APK 仍是旧的轻量 FFmpeg 构建，逐帧或编码功能会被禁用或失败。\n\n" +
+                "普通预览使用系统 MediaPlayer。逐帧模式会持续持有系统解码器对象，缓存当前位置附近的原始分辨率帧；硬件解码不可用时会提示并回退到系统软件解码。\n\n" +
                 "许可证\n" +
                 "本项目集成并调用 FFmpeg / FFprobe。启用 libx264 等 GPL 组件后，分发 APK 需要同时遵守 GPL 与 FFmpeg 的许可证要求，保留源码获取方式、构建脚本和修改说明。\n\n" +
                 "免责声明\n" +
