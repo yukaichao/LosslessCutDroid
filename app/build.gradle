@@ -16,8 +16,8 @@ android {
         applicationId 'com.example.losslesscutter'
         minSdk 26
         targetSdk 35
-        versionCode 9
-        versionName '0.6.3'
+        versionCode 10
+        versionName '0.6.4'
 
         // 首版只在线编译 arm64-v8a。需要更多 ABI 时，扩展 FFmpeg 编译脚本和这里。
         ndk {

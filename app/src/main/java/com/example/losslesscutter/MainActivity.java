@@ -7,6 +7,7 @@ import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Matrix;
@@ -25,6 +26,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.Surface;
@@ -100,7 +103,6 @@ public class MainActivity extends Activity {
     private static final String KEY_WIDTH = "width";
     private static final String KEY_HEIGHT = "height";
     private static final String KEY_FPS = "fps";
-    private static final String KEY_CRF = "crf";
     private static final String KEY_PRESET = "preset";
     private static final String KEY_EXTRA_ARGS = "extra_args";
     private static final long PENDING_STATE_TTL_MS = 10L * 60L * 1000L;
@@ -109,7 +111,6 @@ public class MainActivity extends Activity {
     private enum RangeMode { MANUAL, CENTER, CURRENT }
     private enum ExportMode { COPY, ENCODE }
     private enum EncoderBackend { HARDWARE, FFMPEG }
-
     private static class ExportSettings {
         ExportMode mode = ExportMode.COPY;
         EncoderBackend backend = EncoderBackend.HARDWARE;
@@ -121,7 +122,6 @@ public class MainActivity extends Activity {
         String width = "";
         String height = "";
         String fps = "";
-        String crf = "23";
         String preset = "medium";
         String extraArgs = "";
     }
@@ -204,6 +204,7 @@ public class MainActivity extends Activity {
     private EditText beforeEdit;
     private EditText afterEdit;
     private TextView exportSummaryText;
+    private TextView exportEstimateText;
     private RadioGroup exportModeGroup;
     private RadioButton copyModeRadio;
     private RadioButton encodeModeRadio;
@@ -220,7 +221,6 @@ public class MainActivity extends Activity {
     private EditText widthEdit;
     private EditText heightEdit;
     private EditText fpsEdit;
-    private EditText crfEdit;
     private EditText presetEdit;
     private EditText extraArgsEdit;
     private TextView outputText;
@@ -386,6 +386,7 @@ public class MainActivity extends Activity {
         beforeEdit = findViewById(R.id.beforeEdit);
         afterEdit = findViewById(R.id.afterEdit);
         exportSummaryText = findViewById(R.id.exportSummaryText);
+        exportEstimateText = findViewById(R.id.exportEstimateText);
         exportModeGroup = findViewById(R.id.exportModeGroup);
         copyModeRadio = findViewById(R.id.copyModeRadio);
         encodeModeRadio = findViewById(R.id.encodeModeRadio);
@@ -402,7 +403,6 @@ public class MainActivity extends Activity {
         widthEdit = findViewById(R.id.widthEdit);
         heightEdit = findViewById(R.id.heightEdit);
         fpsEdit = findViewById(R.id.fpsEdit);
-        crfEdit = findViewById(R.id.crfEdit);
         presetEdit = findViewById(R.id.presetEdit);
         extraArgsEdit = findViewById(R.id.extraArgsEdit);
         outputText = findViewById(R.id.outputText);
@@ -428,7 +428,6 @@ public class MainActivity extends Activity {
         afterEdit.setText("5");
         videoBitrateEdit.setText(exportSettings.videoBitrate);
         audioBitrateEdit.setText(exportSettings.audioBitrate);
-        crfEdit.setText(exportSettings.crf);
         presetEdit.setText(exportSettings.preset);
         previewOutputButton.setEnabled(false);
 
@@ -486,11 +485,16 @@ public class MainActivity extends Activity {
         exportModeGroup.setOnCheckedChangeListener((group, checkedId) -> {
             exportSettings.mode = checkedId == R.id.encodeModeRadio ? ExportMode.ENCODE : ExportMode.COPY;
             updateExportUi();
+            syncExportSummary();
         });
         backendGroup.setOnCheckedChangeListener((group, checkedId) -> {
             exportSettings.backend = checkedId == R.id.ffmpegBackendRadio ? EncoderBackend.FFMPEG : EncoderBackend.HARDWARE;
             populateCodecSpinners();
+            syncExportSummary();
         });
+        addExportEstimateWatcher(videoBitrateEdit);
+        addExportEstimateWatcher(audioBitrateEdit);
+        addExportEstimateWatcher(extraArgsEdit);
 
         previewTextureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
@@ -1640,6 +1644,95 @@ public class MainActivity extends Activity {
     private void syncExportSummary() {
         exportSummaryText.setText("裁剪范围：" + formatClock(startMs) + " → " + formatClock(endMs)
                 + "，时长 " + formatClock(Math.max(0, endMs - startMs)));
+        if (exportEstimateText != null) exportEstimateText.setText(estimateOutputSizeText(Math.max(0, endMs - startMs)));
+    }
+
+    private String estimateOutputSizeText(long clipMs) {
+        if (inputUri == null || clipMs <= 0) return "预计大小：--";
+        boolean encode = encodeModeRadio != null && encodeModeRadio.isChecked();
+        if (!encode) {
+            long inputSize = readUriSize(inputUri);
+            if (inputSize <= 0 || durationMs <= 0) return "预计大小：--";
+            long estimated = Math.round(inputSize * (clipMs / (double) durationMs));
+            return "预计大小：" + formatBytes(estimated) + "（按原文件比例估算）";
+        }
+
+        long videoBps = parseBitrateBitsPerSecond(videoBitrateEdit == null ? "" : videoBitrateEdit.getText().toString());
+        long audioBps = parseBitrateBitsPerSecond(audioBitrateEdit == null ? "" : audioBitrateEdit.getText().toString());
+        if (videoBps <= 0 && audioBps <= 0) return "预计大小：--";
+        double seconds = clipMs / 1000.0;
+        long estimated = Math.round((videoBps + audioBps) * seconds / 8.0 * 1.02);
+        String audioNote = "copy".equals(spinnerValue(audioCodecSpinner, "")) ? "，音频 copy 按填写音频码率估算" : "";
+        String extraNote = extraArgsEdit != null && extraArgsEdit.getText().toString().trim().isEmpty()
+                ? "" : "，额外参数可能改变大小";
+        return "预计大小：" + formatBytes(estimated) + "（按目标码率估算" + audioNote + extraNote + "）";
+    }
+
+    private long parseBitrateBitsPerSecond(String text) {
+        if (text == null) return 0;
+        String value = text.trim().toLowerCase(Locale.US);
+        if (value.isEmpty()) return 0;
+        value = value.replace("bps", "").trim();
+        double multiplier = 1.0;
+        if (value.endsWith("kb") || value.endsWith("k")) {
+            multiplier = 1000.0;
+            value = value.replaceAll("kb?$", "");
+        } else if (value.endsWith("mb") || value.endsWith("m")) {
+            multiplier = 1000_000.0;
+            value = value.replaceAll("mb?$", "");
+        }
+        try {
+            double number = Double.parseDouble(value.trim());
+            if (multiplier == 1.0 && number > 0 && number < 100_000) multiplier = 1000.0;
+            return Math.max(0, Math.round(number * multiplier));
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private long readUriSize(Uri uri) {
+        if (uri == null) return 0;
+        Cursor cursor = null;
+        try {
+            cursor = getContentResolver().query(uri, new String[]{OpenableColumns.SIZE}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                int column = cursor.getColumnIndex(OpenableColumns.SIZE);
+                if (column >= 0) {
+                    long size = cursor.getLong(column);
+                    if (size > 0) return size;
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+        try (AssetFileDescriptor afd = getContentResolver().openAssetFileDescriptor(uri, "r")) {
+            return afd == null ? 0 : Math.max(0, afd.getLength());
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private String formatBytes(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        double value = bytes;
+        String[] units = {"B", "KB", "MB", "GB"};
+        int unit = 0;
+        while (value >= 1024 && unit < units.length - 1) {
+            value /= 1024.0;
+            unit++;
+        }
+        return String.format(Locale.US, value >= 100 ? "%.0f %s" : "%.1f %s", value, units[unit]);
+    }
+
+    private void addExportEstimateWatcher(EditText editText) {
+        editText.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                syncExportSummary();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
     }
 
     private void updateInputOutputLabels() {
@@ -1825,7 +1918,6 @@ public class MainActivity extends Activity {
         exportSettings.width = widthEdit.getText().toString().trim();
         exportSettings.height = heightEdit.getText().toString().trim();
         exportSettings.fps = fpsEdit.getText().toString().trim();
-        exportSettings.crf = crfEdit.getText().toString().trim();
         exportSettings.preset = presetEdit.getText().toString().trim();
         exportSettings.extraArgs = extraArgsEdit.getText().toString().trim();
     }
@@ -1840,7 +1932,6 @@ public class MainActivity extends Activity {
         widthEdit.setText(exportSettings.width);
         heightEdit.setText(exportSettings.height);
         fpsEdit.setText(exportSettings.fps);
-        crfEdit.setText(exportSettings.crf);
         presetEdit.setText(exportSettings.preset);
         extraArgsEdit.setText(exportSettings.extraArgs);
         populateCodecSpinners();
@@ -1863,7 +1954,6 @@ public class MainActivity extends Activity {
         out.putString(KEY_WIDTH, exportSettings.width);
         out.putString(KEY_HEIGHT, exportSettings.height);
         out.putString(KEY_FPS, exportSettings.fps);
-        out.putString(KEY_CRF, exportSettings.crf);
         out.putString(KEY_PRESET, exportSettings.preset);
         out.putString(KEY_EXTRA_ARGS, exportSettings.extraArgs);
     }
@@ -1879,7 +1969,6 @@ public class MainActivity extends Activity {
         exportSettings.width = in.getString(KEY_WIDTH, exportSettings.width);
         exportSettings.height = in.getString(KEY_HEIGHT, exportSettings.height);
         exportSettings.fps = in.getString(KEY_FPS, exportSettings.fps);
-        exportSettings.crf = in.getString(KEY_CRF, exportSettings.crf);
         exportSettings.preset = in.getString(KEY_PRESET, exportSettings.preset);
         exportSettings.extraArgs = in.getString(KEY_EXTRA_ARGS, exportSettings.extraArgs);
     }
@@ -2002,7 +2091,6 @@ public class MainActivity extends Activity {
         copy.width = source.width;
         copy.height = source.height;
         copy.fps = source.fps;
-        copy.crf = source.crf;
         copy.preset = source.preset;
         copy.extraArgs = source.extraArgs;
         return copy;
@@ -2093,10 +2181,6 @@ public class MainActivity extends Activity {
             cmd.add(settings.fps);
         }
         if (settings.backend == EncoderBackend.FFMPEG) {
-            if (!settings.crf.isEmpty()) {
-                cmd.add("-crf");
-                cmd.add(settings.crf);
-            }
             if (!settings.preset.isEmpty()) {
                 cmd.add("-preset");
                 cmd.add(settings.preset);

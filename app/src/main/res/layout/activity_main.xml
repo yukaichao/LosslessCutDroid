@@ -570,6 +570,15 @@
                     android:textColor="@color/app_text"
                     android:textSize="14sp" />
 
+                <TextView
+                    android:id="@+id/exportEstimateText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="预计大小：--"
+                    android:textColor="@color/app_muted"
+                    android:textSize="13sp" />
+
                 <RadioGroup
                     android:id="@+id/exportModeGroup"
                     android:layout_width="match_parent"
@@ -792,41 +801,21 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
-                        android:text="质量参数：CRF 越小画质越高、文件越大；preset 越慢通常压缩越好。主要用于 FFmpeg 软件编码。"
+                        android:text="软件编码参数：preset 越慢通常压缩越好，但耗时更长；硬件编码会忽略该参数。"
                         android:textColor="@color/app_muted"
                         android:textSize="12sp" />
 
-                    <LinearLayout
+                    <EditText
+                        android:id="@+id/presetEdit"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
+                        android:layout_height="44dp"
                         android:layout_marginTop="2dp"
-                        android:orientation="horizontal">
-
-                        <EditText
-                            android:id="@+id/crfEdit"
-                            android:layout_width="0dp"
-                            android:layout_height="44dp"
-                            android:layout_marginRight="8dp"
-                            android:layout_weight="1"
-                            android:background="@drawable/bg_input"
-                            android:hint="CRF 23"
-                            android:inputType="numberDecimal"
-                            android:singleLine="true"
-                            android:textColor="@color/app_text"
-                            android:textSize="14sp" />
-
-                        <EditText
-                            android:id="@+id/presetEdit"
-                            android:layout_width="0dp"
-                            android:layout_height="44dp"
-                            android:layout_weight="1"
-                            android:background="@drawable/bg_input"
-                            android:hint="preset medium"
-                            android:inputType="text"
-                            android:singleLine="true"
-                            android:textColor="@color/app_text"
-                            android:textSize="14sp" />
-                    </LinearLayout>
+                        android:background="@drawable/bg_input"
+                        android:hint="preset medium"
+                        android:inputType="text"
+                        android:singleLine="true"
+                        android:textColor="@color/app_text"
+                        android:textSize="14sp" />
 
                     <TextView
                         android:layout_width="match_parent"
